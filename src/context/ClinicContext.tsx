@@ -191,8 +191,21 @@ export interface InventoryAlertLog {
   triggeredAt: string;
   acknowledged: boolean;
   acknowledgedAt?: string;
+  /** Who cleared the alert — the doctor via explicit ack, or the system via auto-resolution. */
+  acknowledgedBy?: 'system' | 'doctor';
   linkedOrderId?: string;
   linkedNoteId?: string;
+  /**
+   * Populated on overstock alerts when the item has expired or expiring
+   * batches — surfaces the "overstock with expiry risk" condition from the
+   * M18 process doc, where the module is expected to weigh Module 19 data
+   * against overstock decisions.
+   */
+  expiryRisk?: {
+    expiringQty: number;
+    expiredQty: number;
+    earliestExpiryDays: number | null;
+  };
 }
 
 export interface OverstockReviewNote {
@@ -205,6 +218,26 @@ export interface OverstockReviewNote {
   createdAt: string;
   status: 'open' | 'resolved';
   linkedAlertId?: string;
+}
+
+export type InventoryAuditAction =
+  | 'alert-fired'
+  | 'alert-acknowledged'
+  | 'alert-auto-resolved'
+  | 'overstock-note-resolved'
+  | 'item-created'
+  | 'item-updated'
+  | 'item-deleted'
+  | 'batch-discarded';
+
+export interface InventoryAuditEntry {
+  id: string;
+  timestamp: string;
+  actor: 'system' | 'doctor';
+  action: InventoryAuditAction;
+  itemId: string;
+  itemName: string;
+  detail: string;
 }
 
 export interface OrderDispatchLog {
@@ -259,6 +292,16 @@ export type DemoTrigger =
   | 'simulate-reply-unavailable'
   | 'simulate-no-response'
   | 'simulate-email-bounce';
+
+/** Severity ordering used by M18 to resolve overlapping alerts (highest wins). */
+const SEVERITY_RANK: Record<'critical' | 'low' | 'overstock', number> = {
+  critical: 3,
+  low: 2,
+  overstock: 1,
+};
+
+/** Retain the most recent audit entries; older entries are trimmed to keep memory bounded. */
+const MAX_AUDIT_ENTRIES = 500;
 
 // ── Seed Data ─────────────────────────────────────────────────
 
@@ -384,6 +427,7 @@ interface ClinicContextValue {
   cancelOrder: (orderId: string) => void;
   suppliers: Supplier[];
   inventoryAlertLog: InventoryAlertLog[];
+  inventoryAuditLog: InventoryAuditEntry[];
   overstockReviewNotes: OverstockReviewNote[];
   acknowledgeAlert: (alertId: string) => void;
   resolveOverstockNote: (noteId: string) => void;
@@ -415,6 +459,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
   const [expiryAlertDays, setExpiryAlertDays] = useState(30);
 
   const [inventoryAlertLog, setInventoryAlertLog] = useState<InventoryAlertLog[]>([]);
+  const [inventoryAuditLog, setInventoryAuditLog] = useState<InventoryAuditEntry[]>([]);
   const [overstockReviewNotes, setOverstockReviewNotes] = useState<OverstockReviewNote[]>([]);
   const [orderDispatchLog, setOrderDispatchLog] = useState<OrderDispatchLog[]>([]);
   const [orderTimeline, setOrderTimeline] = useState<OrderTimelineEvent[]>([]);
@@ -440,6 +485,32 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       reference,
       amount,
     }, ...prev]);
+  };
+
+  /**
+   * Append a single audit entry for the M18 trail. Trims to MAX_AUDIT_ENTRIES
+   * so long-running sessions don't grow memory unbounded.
+   */
+  const addInventoryAudit = (
+    actor: 'system' | 'doctor',
+    action: InventoryAuditAction,
+    itemId: string,
+    itemName: string,
+    detail: string,
+  ) => {
+    setInventoryAuditLog(prev => {
+      const entry: InventoryAuditEntry = {
+        id: `IA-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: timestampNow(),
+        actor,
+        action,
+        itemId,
+        itemName,
+        detail,
+      };
+      const next = [entry, ...prev];
+      return next.length > MAX_AUDIT_ENTRIES ? next.slice(0, MAX_AUDIT_ENTRIES) : next;
+    });
   };
 
   const completePayment = (reference: string, action: string, actor: string, amountOverride?: number) => {
@@ -890,10 +961,23 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
   };
 
   const acknowledgeAlert = (alertId: string) => {
+    const alert = inventoryAlertLog.find(a => a.id === alertId);
     const ts = timestampNow();
     setInventoryAlertLog(prev => prev.map(a => a.id === alertId
-      ? { ...a, acknowledged: true, acknowledgedAt: ts }
+      ? { ...a, acknowledged: true, acknowledgedAt: ts, acknowledgedBy: 'doctor' }
       : a));
+    if (alert) {
+      const severityLabel = alert.severity === 'critical' ? 'Critical'
+        : alert.severity === 'low' ? 'Low / Reorder'
+        : 'Overstock';
+      addInventoryAudit(
+        'doctor',
+        'alert-acknowledged',
+        alert.itemId,
+        alert.itemName,
+        `${severityLabel} alert acknowledged (was ${alert.qty} at threshold ${alert.threshold})`,
+      );
+    }
   };
 
   const resolveOverstockNote = (noteId: string) => {
@@ -903,9 +987,16 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     if (note.linkedAlertId) {
       const ts = timestampNow();
       setInventoryAlertLog(prev => prev.map(a => a.id === note.linkedAlertId
-        ? { ...a, acknowledged: true, acknowledgedAt: ts }
+        ? { ...a, acknowledged: true, acknowledgedAt: ts, acknowledgedBy: 'doctor' }
         : a));
     }
+    addInventoryAudit(
+      'doctor',
+      'overstock-note-resolved',
+      note.itemId,
+      note.itemName,
+      `Overstock review note resolved (${note.qty} at threshold ${note.overstockThreshold})`,
+    );
   };
 
   const classifyResponse = (orderId: string, cls: ResponseClass) => {
@@ -968,27 +1059,64 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
   // ── Inventory item CRUD + batch discard ─────────────────────
 
   const saveInventoryItem = (item: InventoryItem) => {
+    const exists = inventory.find(i => i.id === item.id);
     setInventory(prev => {
-      const exists = prev.find(i => i.id === item.id);
-      return exists ? prev.map(i => i.id === item.id ? item : i) : [...prev, item];
+      const found = prev.find(i => i.id === item.id);
+      return found ? prev.map(i => i.id === item.id ? item : i) : [...prev, item];
     });
+    addInventoryAudit(
+      'doctor',
+      exists ? 'item-updated' : 'item-created',
+      item.id,
+      item.name,
+      exists
+        ? `Configuration updated (Critical ${item.criticalThreshold}, Reorder ${item.reorderThreshold}, Overstock ${item.overstockThreshold})`
+        : `Registered in the master supply list — unit ${item.unit}`,
+    );
   };
 
   const removeInventoryItem = (itemId: string) => {
+    const item = inventory.find(i => i.id === itemId);
     setInventory(prev => prev.filter(i => i.id !== itemId));
+    // Cascade-clean the alert log and overstock notes so no orphans linger
+    // after the item is gone. The audit trail is intentionally preserved
+    // so history survives item deletion.
+    setInventoryAlertLog(prev => prev.filter(a => a.itemId !== itemId));
+    setOverstockReviewNotes(prev => prev.filter(n => n.itemId !== itemId));
+    if (item) {
+      addInventoryAudit(
+        'doctor',
+        'item-deleted',
+        item.id,
+        item.name,
+        `Removed from the master supply list`,
+      );
+    }
   };
 
   const discardBatch = (itemId: string, batchNo: string) => {
-    setInventory(prev => prev.map(item => {
-      if (item.id !== itemId) return item;
-      const batch = item.batches.find(b => b.batchNo === batchNo);
-      if (!batch) return item;
+    const item = inventory.find(i => i.id === itemId);
+    const batch = item?.batches.find(b => b.batchNo === batchNo);
+    setInventory(prev => prev.map(invItem => {
+      if (invItem.id !== itemId) return invItem;
+      const b = invItem.batches.find(x => x.batchNo === batchNo);
+      if (!b) return invItem;
       return {
-        ...item,
-        quantity: Math.max(0, item.quantity - batch.qty),
-        batches: item.batches.filter(b => b.batchNo !== batchNo),
+        ...invItem,
+        quantity: Math.max(0, invItem.quantity - b.qty),
+        batches: invItem.batches.filter(x => x.batchNo !== batchNo),
       };
     }));
+    if (item && batch) {
+      const expired = new Date(batch.expiry).getTime() < Date.now();
+      addInventoryAudit(
+        'doctor',
+        'batch-discarded',
+        itemId,
+        item.name,
+        `Batch ${batchNo} removed — ${batch.qty} ${item.unit} (${expired ? 'expired' : 'removed early'})`,
+      );
+    }
   };
 
   // Mock PDF PO — generates a plain-text structured PO and triggers download.
@@ -1092,27 +1220,75 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     const newOrders: SupplyOrder[] = [];
     const newNotes: OverstockReviewNote[] = [];
     const newTimeline: OrderTimelineEvent[] = [];
+    const newAudit: InventoryAuditEntry[] = [];
     const resolvedItemIds: string[] = [];
     const ts = timestampNow();
 
     inventory.forEach(item => {
       const status = getStockStatus(item);
       if (status === 'ok') { resolvedItemIds.push(item.id); return; }
-      const alreadyAlerted = inventoryAlertLogRef.current.some(a => a.itemId === item.id && !a.acknowledged && a.severity === status);
-      if (alreadyAlerted) return;
-      const hasActiveOrder = ordersRef.current.some(o => o.itemId === item.id && !['completed', 'cancelled', 'unavailable'].includes(o.status));
-      if (status !== 'overstock' && hasActiveOrder) return;
+
+      // "Highest severity wins" — skip if an unacknowledged alert of equal
+      // or higher severity already covers this item. This prevents a
+      // de-escalation (Critical → Low) from spawning a duplicate low alert.
+      const myRank = SEVERITY_RANK[status];
+      const alreadyCovered = inventoryAlertLogRef.current.some(
+        a => a.itemId === item.id && !a.acknowledged && SEVERITY_RANK[a.severity] >= myRank,
+      );
+      if (alreadyCovered) return;
+
+      // Only block auto-drafting when the item has an unresolved order in
+      // the pipeline. Terminal statuses (completed / cancelled) free the
+      // item to draft fresh POs; escalated terminal states (unavailable /
+      // no_response) intentionally hold the item until the doctor resolves
+      // them via Order Monitoring — avoiding an infinite draft-and-escalate
+      // loop against the same supplier.
+      const hasUnresolvedOrder = ordersRef.current.some(
+        o => o.itemId === item.id && !['completed', 'cancelled'].includes(o.status),
+      );
+      if (status !== 'overstock' && hasUnresolvedOrder) return;
 
       if (status === 'overstock') {
         const alertId = `ALRT-${Date.now()}-${item.id}`;
         const noteId = `OSN-${Date.now()}-${item.id}`;
+
+        // M18 × M19: check the item's batches so the review note reflects
+        // any expiry risk on top of the overstock condition.
+        const nowMs = Date.now();
+        let expiringQty = 0;
+        let expiredQty = 0;
+        let earliestExpiryDays: number | null = null;
+        item.batches.forEach(b => {
+          const t = new Date(b.expiry).getTime();
+          if (t < nowMs) {
+            expiredQty += b.qty;
+          } else if (isExpiringSoon(b.expiry)) {
+            expiringQty += b.qty;
+            const days = Math.ceil((t - nowMs) / 86400000);
+            if (earliestExpiryDays === null || days < earliestExpiryDays) {
+              earliestExpiryDays = days;
+            }
+          }
+        });
+
+        const hasExpiryRisk = expiringQty > 0 || expiredQty > 0;
+        const expiryRisk = hasExpiryRisk
+          ? { expiringQty, expiredQty, earliestExpiryDays }
+          : undefined;
+
+        const riskSuffix = hasExpiryRisk
+          ? expiredQty > 0
+            ? ` · ${expiredQty} ${item.unit} already expired`
+            : ` · ${expiringQty} ${item.unit} expire in ${earliestExpiryDays}d — expiry risk`
+          : '';
+
         newNotes.push({
           id: noteId,
           itemId: item.id,
           itemName: item.name,
           qty: item.quantity,
           overstockThreshold: item.overstockThreshold,
-          reviewNote: `Stock at ${item.quantity} ${item.unit} — above overstock threshold of ${item.overstockThreshold}. Ordering suppressed. Review consumption or adjust threshold.`,
+          reviewNote: `Stock at ${item.quantity} ${item.unit} — above overstock threshold of ${item.overstockThreshold}. Ordering suppressed. Review consumption or adjust threshold.${riskSuffix}`,
           createdAt: ts,
           status: 'open',
           linkedAlertId: alertId,
@@ -1127,6 +1303,16 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
           triggeredAt: ts,
           acknowledged: false,
           linkedNoteId: noteId,
+          expiryRisk,
+        });
+        newAudit.push({
+          id: `IA-${Date.now()}-${item.id}-over`,
+          timestamp: ts,
+          actor: 'system',
+          action: 'alert-fired',
+          itemId: item.id,
+          itemName: item.name,
+          detail: `Overstock alert — ${item.quantity} ${item.unit} above threshold ${item.overstockThreshold}${riskSuffix}`,
         });
         return;
       }
@@ -1134,6 +1320,8 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       const severity: 'critical' | 'low' = status;
       const orderId = `ORD-${Date.now()}-${item.id}-${severity}`;
       const suggestedQty = Math.max(item.overstockThreshold - item.quantity, item.reorderThreshold);
+      const thresholdValue = severity === 'critical' ? item.criticalThreshold : item.reorderThreshold;
+
       newOrders.push({
         id: orderId,
         poRef: `PO-${Date.now().toString().slice(-6)}`,
@@ -1153,7 +1341,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
         itemName: item.name,
         severity,
         qty: item.quantity,
-        threshold: severity === 'critical' ? item.criticalThreshold : item.reorderThreshold,
+        threshold: thresholdValue,
         triggeredAt: ts,
         acknowledged: false,
         linkedOrderId: orderId,
@@ -1166,7 +1354,33 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
         kind: 'created',
         actor: 'system',
         title: `Auto-drafted ${severity} order`,
-        detail: `Stock at ${item.quantity} ${item.unit} (threshold ${severity === 'critical' ? item.criticalThreshold : item.reorderThreshold}). Drafted PO for ${suggestedQty} ${item.unit}.`,
+        detail: `Stock at ${item.quantity} ${item.unit} (threshold ${thresholdValue}). Drafted PO for ${suggestedQty} ${item.unit}.`,
+      });
+      newAudit.push({
+        id: `IA-${Date.now()}-${item.id}-fire`,
+        timestamp: ts,
+        actor: 'system',
+        action: 'alert-fired',
+        itemId: item.id,
+        itemName: item.name,
+        detail: `${severity === 'critical' ? 'Critical' : 'Low'} alert — ${item.quantity} ${item.unit} at or below threshold ${thresholdValue}`,
+      });
+    });
+
+    // Auto-resolve audit entries — one per item that had unacknowledged
+    // alerts and has now returned to 'ok'.
+    inventory.forEach(item => {
+      if (!resolvedItemIds.includes(item.id)) return;
+      const hadUnack = inventoryAlertLogRef.current.some(a => a.itemId === item.id && !a.acknowledged);
+      if (!hadUnack) return;
+      newAudit.push({
+        id: `IA-${Date.now()}-${item.id}-auto`,
+        timestamp: ts,
+        actor: 'system',
+        action: 'alert-auto-resolved',
+        itemId: item.id,
+        itemName: item.name,
+        detail: `Stock recovered to ${item.quantity} ${item.unit} — alert cleared automatically`,
       });
     });
 
@@ -1174,8 +1388,16 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     if (newOrders.length) setOrders(prev => [...prev, ...newOrders]);
     if (newNotes.length) setOverstockReviewNotes(prev => [...newNotes, ...prev]);
     if (newTimeline.length) setOrderTimeline(prev => [...prev, ...newTimeline]);
+    if (newAudit.length) {
+      setInventoryAuditLog(prev => {
+        const next = [...newAudit, ...prev];
+        return next.length > MAX_AUDIT_ENTRIES ? next.slice(0, MAX_AUDIT_ENTRIES) : next;
+      });
+    }
     if (resolvedItemIds.length) {
-      setInventoryAlertLog(prev => prev.map(a => resolvedItemIds.includes(a.itemId) && !a.acknowledged ? { ...a, acknowledged: true } : a));
+      setInventoryAlertLog(prev => prev.map(a => resolvedItemIds.includes(a.itemId) && !a.acknowledged
+        ? { ...a, acknowledged: true, acknowledgedAt: ts, acknowledgedBy: 'system' }
+        : a));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventory]);
@@ -1224,7 +1446,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       expiryAlertDays, setExpiryAlertDays, isExpiringSoon, isExpired,
       orders, confirmReceived, classifyResponse, cancelOrder,
       suppliers,
-      inventoryAlertLog, overstockReviewNotes, acknowledgeAlert, resolveOverstockNote,
+      inventoryAlertLog, inventoryAuditLog, overstockReviewNotes, acknowledgeAlert, resolveOverstockNote,
       orderDispatchLog, orderTimeline,
       parseSupplierReply,
       automationConfig, setAutomationConfig,

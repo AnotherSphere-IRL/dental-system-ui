@@ -17,6 +17,7 @@ import {
   type InventoryBatch,
   type SupplyOrder,
   type InventoryAlertLog,
+  type InventoryAuditAction,
 } from '../../context/ClinicContext';
 
 type StockState = 'critical' | 'low' | 'normal' | 'overstock';
@@ -43,11 +44,21 @@ export interface InventoryRow {
   linkedOrder?: SupplyOrder;
 }
 
-/** Discriminated union describing which drawer (if any) is open. */
 type DrawerState =
   | { kind: 'new' }
   | { kind: 'view'; item: InventoryRow }
   | { kind: 'edit'; item: InventoryRow };
+
+const AUDIT_ACTION_LABELS: Record<InventoryAuditAction, string> = {
+  'alert-fired': 'Alert fired',
+  'alert-acknowledged': 'Alert acknowledged',
+  'alert-auto-resolved': 'Alert auto-resolved',
+  'overstock-note-resolved': 'Overstock note resolved',
+  'item-created': 'Item created',
+  'item-updated': 'Item updated',
+  'item-deleted': 'Item deleted',
+  'batch-discarded': 'Batch discarded',
+};
 
 // ── Adapter: context InventoryItem → display InventoryRow ─────
 
@@ -261,15 +272,6 @@ function ExpiryCell({ item }: { item: InventoryRow }) {
   );
 }
 
-/**
- * System Action cell.
- *
- * Shows:
- *   1. The current system status text (icon + label)
- *   2. A state-aware navigation link — "View order", "Confirm receipt",
- *      "Classify response", "Handle escalation", or "View deductions"
- *   3. Optional secondary actions (Manage batches, Acknowledge alert)
- */
 function SystemAction({
   item,
   onManage,
@@ -315,12 +317,23 @@ function SystemAction({
     return { label: 'View deductions', onClick: onViewDeductions };
   })();
 
+  const hasExpiryRisk = item.activeAlert?.expiryRisk
+    && (item.activeAlert.expiryRisk.expiringQty > 0 || item.activeAlert.expiryRisk.expiredQty > 0);
+
   return (
     <div className="min-w-48 space-y-2 text-xs">
       <div className="flex items-center gap-2 text-clinical-600">
         <SystemIcon className="h-4 w-4 shrink-0" />
         <span>{item.systemAction}</span>
       </div>
+
+      {hasExpiryRisk && item.activeAlert?.expiryRisk && (
+        <p className="inline-flex items-center gap-1 rounded border border-warning-200 bg-warning-50 px-1.5 py-0.5 text-[10px] font-semibold text-warning-700">
+          ⚠ {item.activeAlert.expiryRisk.expiredQty > 0
+            ? `${item.activeAlert.expiryRisk.expiredQty} ${item.unit} already expired`
+            : `${item.activeAlert.expiryRisk.expiringQty} ${item.unit} expire in ${item.activeAlert.expiryRisk.earliestExpiryDays}d`}
+        </p>
+      )}
 
       <button
         onClick={primaryAction.onClick}
@@ -418,8 +431,6 @@ function AlertsView({
   onViewItem,
   onManageBatches,
 }: AlertsViewProps) {
-  // Categorise each item by its highest-severity condition, so an item
-  // that is both critical AND expiring appears only under Critical.
   const categoryByItem = new Map<string, 'critical' | 'low' | 'overstock' | 'expiry'>();
   rows.forEach(row => {
     if (row.stock === 'critical') categoryByItem.set(row.id, 'critical');
@@ -584,6 +595,14 @@ function AlertRowCard({
     return { label: 'View item', onClick: () => onViewItem(row) };
   })();
 
+  const thresholdLabel = row.activeAlert
+    ? row.activeAlert.severity === 'critical' ? 'Critical'
+      : row.activeAlert.severity === 'low' ? 'Reorder'
+      : 'Overstock'
+    : null;
+
+  const expiryRisk = row.activeAlert?.expiryRisk;
+
   return (
     <div className="flex items-center gap-4 rounded-xl border border-clinical-200 bg-white px-4 py-3">
       <div className="min-w-0 flex-1">
@@ -595,6 +614,21 @@ function AlertRowCard({
           {row.category} · {row.id}
         </p>
         <p className="mt-1.5 truncate text-xs text-clinical-600">{row.systemAction}</p>
+        {row.activeAlert && thresholdLabel && (
+          <p className="mt-0.5 text-[10px] text-clinical-400">
+            {thresholdLabel} threshold:{' '}
+            <span className="font-semibold text-clinical-600">
+              {row.activeAlert.threshold} {row.unit}
+            </span>
+          </p>
+        )}
+        {expiryRisk && (expiryRisk.expiringQty > 0 || expiryRisk.expiredQty > 0) && (
+          <p className="mt-1 inline-flex items-center gap-1 rounded border border-warning-200 bg-warning-50 px-1.5 py-0.5 text-[10px] font-semibold text-warning-700">
+            ⚠ {expiryRisk.expiredQty > 0
+              ? `${expiryRisk.expiredQty} ${row.unit} already expired`
+              : `${expiryRisk.expiringQty} ${row.unit} expire in ${expiryRisk.earliestExpiryDays}d`}
+          </p>
+        )}
       </div>
       <div className="shrink-0 text-right">
         <p className="text-lg font-bold leading-none text-clinical-900">
@@ -658,7 +692,7 @@ const inputClass = 'w-full rounded-lg border border-clinical-200 bg-white px-3 p
 // ── ItemDetails (read-only view) ──────────────────────────────
 
 function ItemDetails({ item }: { item: InventoryRow }) {
-  const { deductionLog, suppliers } = useClinic();
+  const { deductionLog, suppliers, inventoryAuditLog } = useClinic();
   const [historyRange, setHistoryRange] = useState<7 | 30 | 90>(30);
   const [procedureFilter, setProcedureFilter] = useState<string>('all');
 
@@ -685,6 +719,11 @@ function ItemDetails({ item }: { item: InventoryRow }) {
     : usageEntries.filter(entry => entry.procedure === procedureFilter);
 
   const totalUsed = usageEntries.reduce((total, entry) => total + entry.qty, 0);
+
+  const auditEntries = useMemo(
+    () => inventoryAuditLog.filter(e => e.itemId === item.id).slice(0, 15),
+    [inventoryAuditLog, item.id],
+  );
 
   const primarySupplier = suppliers.find(s => s.id === item.sourceItem.supplierId);
   const backupSuppliers = item.sourceItem.backupSupplierIds
@@ -746,7 +785,7 @@ function ItemDetails({ item }: { item: InventoryRow }) {
         </dl>
       </section>
 
-      <section className="pt-7">
+      <section className="border-b border-clinical-200 py-7">
         <p className="mb-4 font-semibold text-clinical-900">Deduction history</p>
 
         <div className="flex items-end justify-between">
@@ -829,6 +868,46 @@ function ItemDetails({ item }: { item: InventoryRow }) {
             <p className="mt-2 text-xs font-medium text-clinical-600">
               {procedureFilter === 'all' ? 'No consumption recorded in this period' : 'No deductions for this procedure'}
             </p>
+          </div>
+        )}
+      </section>
+
+      {/* Activity log — audit trail for this item */}
+      <section className="pt-7">
+        <div className="flex items-end justify-between">
+          <p className="font-semibold text-clinical-900">Activity log</p>
+          {auditEntries.length > 0 && (
+            <span className="text-[10px] text-clinical-400">{auditEntries.length} entr{auditEntries.length === 1 ? 'y' : 'ies'}</span>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-clinical-400">
+          Alerts, acknowledgments, and configuration changes recorded for this item.
+        </p>
+
+        {auditEntries.length > 0 ? (
+          <div className="mt-4 divide-y divide-clinical-100 rounded-xl border border-clinical-200">
+            {auditEntries.map(entry => (
+              <div key={entry.id} className="flex items-start gap-3 px-4 py-2.5">
+                <span className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+                  entry.actor === 'system'
+                    ? 'bg-clinical-100 text-clinical-600'
+                    : 'bg-primary-50 text-primary-700'
+                }`}>
+                  {entry.actor === 'system' ? '⚙' : '👤'}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-clinical-700">
+                    {AUDIT_ACTION_LABELS[entry.action]}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-clinical-500">{entry.detail}</p>
+                </div>
+                <p className="shrink-0 font-mono text-[10px] text-clinical-400">{entry.timestamp}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-4 rounded-xl border border-dashed border-clinical-200 px-4 py-6 text-center">
+            <p className="text-xs text-clinical-400">No activity recorded for this item yet.</p>
           </div>
         )}
       </section>
@@ -1315,7 +1394,7 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
 function AlertSettingsPopover({ onClose }: { onClose: () => void }) {
   const { expiryAlertDays, setExpiryAlertDays, automationConfig, setAutomationConfig } = useClinic();
   return (
-    <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-clinical-200 bg-white p-4 shadow-xl">
+    <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-clinical-200 bg-white p-4 shadow-xl">
       <div className="mb-3 flex items-center justify-between">
         <p className="text-xs font-semibold text-clinical-800">Automation Settings</p>
         <button onClick={onClose} className="text-clinical-400 hover:text-clinical-700">
@@ -1353,6 +1432,21 @@ function AlertSettingsPopover({ onClose }: { onClose: () => void }) {
             value={automationConfig.eodDispatchHour}
             onChange={e => setAutomationConfig({ ...automationConfig, eodDispatchHour: Math.min(23, Math.max(0, Number(e.target.value) || 18)) })}
             className="w-full rounded-lg border border-clinical-200 px-3 py-2 text-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-100 outline-none"
+          />
+        </label>
+
+        <label className="flex items-start justify-between gap-3 rounded-lg border border-clinical-200 bg-clinical-50/60 p-2.5">
+          <span className="min-w-0">
+            <span className="block font-medium text-clinical-600">Immediate dispatch for Critical</span>
+            <span className="mt-0.5 block text-[10px] leading-snug text-clinical-400">
+              Skip the end-of-day batch for critical stock — draft and send right away.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={automationConfig.criticalImmediate}
+            onChange={e => setAutomationConfig({ ...automationConfig, criticalImmediate: e.target.checked })}
+            className="mt-0.5 h-4 w-4 shrink-0 accent-primary-600"
           />
         </label>
       </div>
@@ -1458,17 +1552,12 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
   const rangeStart = filteredItems.length === 0 ? 0 : pageStart + 1;
   const rangeEnd = Math.min(pageStart + pageSize, filteredItems.length);
 
-  // Counts used by the primary tabs.
   const unacknowledgedCount = inventoryAlertLog.filter(a => !a.acknowledged).length;
-  const totalAlertItems = connectedInventoryRows.filter(r =>
-    r.stock !== 'normal' || r.expiry === 'expiring' || r.expiry === 'expired'
-  ).length;
 
   useEffect(() => {
     setCurrentPage(1);
   }, [filter, query]);
 
-  // Deep-link into a specific item's edit view.
   useEffect(() => {
     if (!initialEditItemName) return;
     const item = connectedInventoryRows.find(row => row.name === initialEditItemName);
@@ -1532,7 +1621,6 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
         </div>
       </div>
 
-      {/* Primary tabs: Stock / Alerts */}
       <div className="mb-6 inline-flex rounded-lg border border-clinical-200 bg-white p-0.5">
         <button
           onClick={() => setPrimaryView('stock')}
@@ -1565,7 +1653,6 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
         </button>
       </div>
 
-      {/* Stock view */}
       {primaryView === 'stock' && (
         <>
           <div className="mb-5 flex items-center gap-3">
@@ -1734,7 +1821,6 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
         </>
       )}
 
-      {/* Alerts view */}
       {primaryView === 'alerts' && (
         <AlertsView
           rows={connectedInventoryRows}
