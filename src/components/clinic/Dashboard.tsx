@@ -572,7 +572,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
         </div>
       </div>
 
-      <DemoTriggers />
+      {import.meta.env.DEV && <DemoTriggers />}
     </div>
   );
 }

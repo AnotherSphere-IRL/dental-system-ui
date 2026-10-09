@@ -3,19 +3,6 @@ import { IconAlert, IconCheck, IconClock } from '../icons';
 import DentalArchSVG, { type ToothCondition } from './DentalArchSVG';
 import { useClinic } from '../../context/ClinicContext';
 
-// Supply name → inventory item ID mapping
-const SUPPLY_ITEM_MAP: Record<string, string> = {
-  'Composite Resin A2':    'I01',
-  'Composite Resin A3':    'I02',
-  'Bonding Agent':         'I03',
-  'Anesthetic Carpule 2%': 'I04',
-  'Dental Cement':         'I05',
-  'Rubber Dam':            'I06',
-  'Matrix Band':           'I07',
-  'Gloves (pair)':         'I08',
-  'Cotton Rolls':          'I09',
-  'Gauze Pads':            'I10',
-};
 type TreatmentStatus = 'planned' | 'in-progress' | 'completed';
 
 interface ToothEntry {
@@ -44,6 +31,9 @@ interface ClinicalTemplate {
   supplies: string[];
 }
 
+// Supplies are stored as inventory item IDs (I01–I10). Names come from
+// `inventory` at render time, so renaming an item in ItemDrawer can't
+// silently break template pre-fill or stock deduction.
 const CLINICAL_TEMPLATES: ClinicalTemplate[] = [
   {
     id: 'tpl-exam',
@@ -52,7 +42,7 @@ const CLINICAL_TEMPLATES: ClinicalTemplate[] = [
     procedure: 'Dental Examination',
     treatmentStatus: 'completed',
     notes: 'Routine clinical examination performed. No acute findings noted.',
-    supplies: ['Gloves (pair)', 'Cotton Rolls'],
+    supplies: ['I08', 'I09'], // Gloves, Cotton Rolls
   },
   {
     id: 'tpl-prophy',
@@ -61,7 +51,7 @@ const CLINICAL_TEMPLATES: ClinicalTemplate[] = [
     procedure: 'Prophylaxis',
     treatmentStatus: 'completed',
     notes: 'Full-mouth prophylaxis completed. Plaque and calculus deposits removed.',
-    supplies: ['Gloves (pair)', 'Gauze Pads', 'Cotton Rolls'],
+    supplies: ['I08', 'I10', 'I09'], // Gloves, Gauze Pads, Cotton Rolls
   },
   {
     id: 'tpl-composite',
@@ -70,7 +60,7 @@ const CLINICAL_TEMPLATES: ClinicalTemplate[] = [
     procedure: 'Composite Restoration',
     treatmentStatus: 'completed',
     notes: 'Caries removed and cavity prepared. Composite resin restoration placed.',
-    supplies: ['Composite Resin A2', 'Bonding Agent', 'Anesthetic Carpule 2%', 'Matrix Band', 'Rubber Dam', 'Gloves (pair)'],
+    supplies: ['I01', 'I03', 'I04', 'I07', 'I06', 'I08'], // Composite A2, Bonding, Anesthetic, Matrix, Rubber Dam, Gloves
   },
   {
     id: 'tpl-rct',
@@ -79,7 +69,7 @@ const CLINICAL_TEMPLATES: ClinicalTemplate[] = [
     procedure: 'Root Canal Treatment',
     treatmentStatus: 'completed',
     notes: 'Pulp extirpated. Canal shaping and obturation completed. No post-op complications.',
-    supplies: ['Anesthetic Carpule 2%', 'Dental Cement', 'Rubber Dam', 'Cotton Rolls', 'Gauze Pads', 'Gloves (pair)'],
+    supplies: ['I04', 'I05', 'I06', 'I09', 'I10', 'I08'], // Anesthetic, Cement, Rubber Dam, Cotton Rolls, Gauze, Gloves
   },
   {
     id: 'tpl-extraction',
@@ -88,7 +78,7 @@ const CLINICAL_TEMPLATES: ClinicalTemplate[] = [
     procedure: 'Extraction',
     treatmentStatus: 'completed',
     notes: 'Tooth extracted under local anesthesia. Post-extraction instructions provided to patient.',
-    supplies: ['Anesthetic Carpule 2%', 'Gauze Pads', 'Cotton Rolls', 'Gloves (pair)'],
+    supplies: ['I04', 'I10', 'I09', 'I08'], // Anesthetic, Gauze, Cotton Rolls, Gloves
   },
   {
     id: 'tpl-crown',
@@ -97,14 +87,8 @@ const CLINICAL_TEMPLATES: ClinicalTemplate[] = [
     procedure: 'Crown Placement',
     treatmentStatus: 'completed',
     notes: 'Definitive crown cemented. Occlusion checked and adjusted.',
-    supplies: ['Dental Cement', 'Cotton Rolls', 'Gauze Pads', 'Gloves (pair)'],
+    supplies: ['I05', 'I09', 'I10', 'I08'], // Cement, Cotton Rolls, Gauze, Gloves
   },
-];
-
-const SUPPLIES = [
-  'Composite Resin A2', 'Composite Resin A3', 'Bonding Agent',
-  'Anesthetic Carpule 2%', 'Dental Cement', 'Rubber Dam',
-  'Matrix Band', 'Gloves (pair)', 'Cotton Rolls', 'Gauze Pads'
 ];
 
 const TOOTH_LABELS: Record<number, string> = {
@@ -146,7 +130,7 @@ export default function Charting() {
     treatmentStatus: 'completed' as TreatmentStatus,
     procedure: '',
     notes: '',
-    supplies: [] as string[],
+    supplies: [] as string[], // inventory item IDs (I01–I10)
   });
 
   const handleToothClick = (n: number) => {
@@ -188,10 +172,10 @@ export default function Charting() {
       ]);
       // M17: deduct selected supplies from shared inventory.
       // Patient = Jose dela Cruz (P-2001); performer = Dr. Reyes.
-      const itemIds = form.supplies.map(s => SUPPLY_ITEM_MAP[s]).filter((x): x is string => Boolean(x));
-      if (itemIds.length > 0) {
+      // form.supplies now holds inventory item IDs directly (I01–I10).
+      if (form.supplies.length > 0) {
         deductInventory(
-          itemIds,
+          form.supplies,
           'P-2001',
           form.procedure || 'Dental Examination',
           'Dr. Reyes',
@@ -202,7 +186,6 @@ export default function Charting() {
       setSavedTooth(selectedTooth);
     }, 800);
   };
-
 
   const treatedTeeth = Object.entries(conditions).filter(([, c]) => c !== 'normal');
   const missingTeeth = treatedTeeth.filter(([, c]) => c === 'missing').map(([n]) => n);
@@ -346,35 +329,32 @@ export default function Charting() {
               <div className="mt-4">
                 <label className="block text-xs font-medium text-clinical-700 mb-2">Supplies Used</label>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                  {SUPPLIES.map(s => {
-                    const itemId = SUPPLY_ITEM_MAP[s];
-                    const invItem = itemId ? inventory.find(i => i.id === itemId) : null;
-                    const stockStatus = invItem ? getStockStatus(invItem) : null;
-                    const qty = invItem?.quantity ?? null;
+                  {inventory.map(invItem => {
+                    const stockStatus = getStockStatus(invItem);
+                    const qty = invItem.quantity;
+                    const selected = form.supplies.includes(invItem.id);
                     return (
-                      <label key={s} className="flex items-center gap-1.5 text-xs cursor-pointer group">
+                      <label key={invItem.id} className="flex items-center gap-1.5 text-xs cursor-pointer group">
                         <input
                           type="checkbox"
-                          checked={form.supplies.includes(s)}
+                          checked={selected}
                           onChange={e => {
                             setForm(p => ({
                               ...p,
                               supplies: e.target.checked
-                                ? [...p.supplies, s]
-                                : p.supplies.filter(x => x !== s)
+                                ? [...p.supplies, invItem.id]
+                                : p.supplies.filter(x => x !== invItem.id)
                             }));
                           }}
                           className="w-3.5 h-3.5 accent-primary-700"
-                          disabled={qty !== null && qty <= 0}
+                          disabled={qty <= 0}
                         />
-                        <span className={`leading-tight ${qty !== null && qty <= 0 ? 'text-clinical-300' : 'text-clinical-700 group-hover:text-clinical-900'}`}>{s}</span>
-                        {qty !== null && (
-                          <span className={`ml-auto text-[9px] font-bold shrink-0 ${
-                            stockStatus === 'critical' ? 'text-alert-600' :
-                            stockStatus === 'low'      ? 'text-warning-600' :
-                            'text-clinical-400'
-                          }`}>{qty}</span>
-                        )}
+                        <span className={`leading-tight ${qty <= 0 ? 'text-clinical-300' : 'text-clinical-700 group-hover:text-clinical-900'}`}>{invItem.name}</span>
+                        <span className={`ml-auto text-[9px] font-bold shrink-0 ${
+                          stockStatus === 'critical' ? 'text-alert-600' :
+                          stockStatus === 'low'      ? 'text-warning-600' :
+                          'text-clinical-400'
+                        }`}>{qty}</span>
                       </label>
                     );
                   })}
@@ -476,7 +456,6 @@ export default function Charting() {
     </div>
   );
 }
-
 
 function TreatmentBadge({ status }: { status: TreatmentStatus }) {
   const styles: Record<TreatmentStatus, string> = {

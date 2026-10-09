@@ -69,8 +69,9 @@ export default function ClinicApp({ user, onLogout }: Props) {
   const handleNavChange = (v: View) => {
     setView(v);
     if (v !== 'patients') setSelectedPatient(null);
-    // Clear any stale deep-link target when the user navigates elsewhere manually.
+    // Clear any stale deep-link targets when the user navigates elsewhere manually.
     if (v !== 'orders') setPendingOrderId(null);
+    if (v !== 'inventory') setInventoryEditTarget(null);
   };
 
   const handleOpenBilling = (module: BillingModule, adjustmentTab?: AdjustmentTab) => {
@@ -210,6 +211,7 @@ export default function ClinicApp({ user, onLogout }: Props) {
               {view === 'inventory'  && (
                 <Inventory
                   initialEditItemName={inventoryEditTarget}
+                  onConsumeInitialEditItemName={() => setInventoryEditTarget(null)}
                   onNavigateToOrder={handleNavigateToOrder}
                 />
               )}

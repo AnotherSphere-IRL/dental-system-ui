@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   IconBell,
   IconCheck,
@@ -297,13 +297,11 @@ function ExpiryCell({ item }: { item: InventoryRow }) {
 function SystemAction({
   item,
   onManage,
-  onAcknowledge,
   onViewOrder,
   onViewDeductions,
 }: {
   item: InventoryRow;
   onManage: () => void;
-  onAcknowledge: () => void;
   onViewOrder: (orderId: string) => void;
   onViewDeductions: () => void;
 }) {
@@ -375,16 +373,6 @@ function SystemAction({
           </div>
         </div>
       )}
-
-      {item.activeAlert && (
-        <button
-          onClick={onAcknowledge}
-          className="inline-flex items-center gap-1 rounded-md border border-warning-200 bg-warning-50 px-2 py-0.5 text-[10px] font-semibold text-warning-700 hover:bg-warning-100 transition"
-        >
-          <IconBell className="h-3 w-3" />
-          Acknowledge {item.activeAlert.severity} alert
-        </button>
-      )}
     </div>
   );
 }
@@ -414,13 +402,12 @@ function AlertSummaryTile({ label, count, tone, sub }: { label: string; count: n
 
 interface AlertsViewProps {
   rows: InventoryRow[];
-  onAcknowledge: (alertId: string) => void;
   onViewOrder: (orderId: string) => void;
   onViewItem: (row: InventoryRow) => void;
   onManageBatches: (row: InventoryRow) => void;
 }
 
-function AlertsView({ rows, onAcknowledge, onViewOrder, onViewItem, onManageBatches }: AlertsViewProps) {
+function AlertsView({ rows, onViewOrder, onViewItem, onManageBatches }: AlertsViewProps) {
   const categoryByItem = new Map<string, 'critical' | 'low' | 'overstock' | 'expiry'>();
   rows.forEach(row => {
     if (row.stock === 'critical') categoryByItem.set(row.id, 'critical');
@@ -462,22 +449,22 @@ function AlertsView({ rows, onAcknowledge, onViewOrder, onViewItem, onManageBatc
       {critical.length > 0 && (
         <AlertGroup title="Critical Low" tone="alert"
           description="Quantity at or below the critical threshold. Auto-drafted for immediate dispatch."
-          rows={critical} onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
+          rows={critical} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
       )}
       {low.length > 0 && (
         <AlertGroup title="Low / Reorder" tone="warning"
           description="Quantity at or below the reorder threshold. Queued for end-of-day dispatch."
-          rows={low} onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
+          rows={low} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
       )}
       {overstock.length > 0 && (
         <AlertGroup title="Overstock" tone="info"
           description="Quantity above the maximum. Ordering is suppressed — review consumption or adjust the threshold."
-          rows={overstock} onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
+          rows={overstock} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
       )}
       {expiry.length > 0 && (
         <AlertGroup title="Expiring / Expired" tone="warning"
           description="Batches approaching or past their expiration date. Review for use or physical disposal."
-          rows={expiry} onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
+          rows={expiry} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
       )}
     </div>
   );
@@ -490,7 +477,7 @@ interface AlertGroupProps extends Omit<AlertsViewProps, 'rows'> {
   rows: InventoryRow[];
 }
 
-function AlertGroup({ title, tone, description, rows, onAcknowledge, onViewOrder, onViewItem, onManageBatches }: AlertGroupProps) {
+function AlertGroup({ title, tone, description, rows, onViewOrder, onViewItem, onManageBatches }: AlertGroupProps) {
   const s = ALERT_TONE_STYLES[tone];
   return (
     <section>
@@ -502,14 +489,14 @@ function AlertGroup({ title, tone, description, rows, onAcknowledge, onViewOrder
       <div className="space-y-2">
         {rows.map(row => (
           <AlertRowCard key={row.id} row={row}
-            onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
+            onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
         ))}
       </div>
     </section>
   );
 }
 
-function AlertRowCard({ row, onAcknowledge, onViewOrder, onViewItem, onManageBatches }: { row: InventoryRow } & Omit<AlertsViewProps, 'rows'>) {
+function AlertRowCard({ row, onViewOrder, onViewItem, onManageBatches }: { row: InventoryRow } & Omit<AlertsViewProps, 'rows'>) {
   const primary = (() => {
     if (row.expiry === 'expired' || row.expiry === 'expiring') {
       return { label: 'Review batches', onClick: () => onManageBatches(row) };
@@ -576,15 +563,6 @@ function AlertRowCard({ row, onAcknowledge, onViewOrder, onViewItem, onManageBat
         <button onClick={primary.onClick} className="inline-flex items-center gap-1 text-xs font-semibold text-primary-700 hover:text-primary-900">
           {primary.label} <IconChevronRight className="h-3 w-3" />
         </button>
-        {row.activeAlert && (
-          <button
-            onClick={() => onAcknowledge(row.activeAlert!.id)}
-            className="inline-flex items-center gap-1 rounded-md border border-warning-200 bg-warning-50 px-2 py-0.5 text-[10px] font-semibold text-warning-700 hover:bg-warning-100 transition"
-          >
-            <IconBell className="h-3 w-3" />
-            Acknowledge
-          </button>
-        )}
       </div>
     </div>
   );
@@ -1428,111 +1406,19 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
   );
 }
 
-// ── Alert settings popover ────────────────────────────────────
-
-function AlertSettingsPopover({ onClose }: { onClose: () => void }) {
-  const { expiryAlertDays, setExpiryAlertDays, automationConfig, setAutomationConfig } = useClinic();
-  return (
-    <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-clinical-200 bg-white p-4 shadow-xl">
-      <div className="mb-3 flex items-center justify-between">
-        <p className="text-xs font-semibold text-clinical-800">Automation Settings</p>
-        <button onClick={onClose} className="text-clinical-400 hover:text-clinical-700">
-          <IconX className="h-4 w-4" />
-        </button>
-      </div>
-      <div className="space-y-3 text-xs">
-        <label className="block">
-          <span className="mb-1 block font-medium text-clinical-600">Expiry alert window (days)</span>
-          <input
-            type="number"
-            min="1"
-            max="180"
-            value={expiryAlertDays}
-            onChange={e => setExpiryAlertDays(Math.max(1, Number(e.target.value) || 30))}
-            className="w-full rounded-lg border border-clinical-200 px-3 py-2 text-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-100 outline-none"
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block font-medium text-clinical-600">Response window (hours)</span>
-          <input
-            type="number"
-            min="1"
-            value={automationConfig.responseWindowHours}
-            onChange={e => setAutomationConfig({ ...automationConfig, responseWindowHours: Math.max(1, Number(e.target.value) || 24) })}
-            className="w-full rounded-lg border border-clinical-200 px-3 py-2 text-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-100 outline-none"
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block font-medium text-clinical-600">EOD dispatch hour (0–23)</span>
-          <input
-            type="number"
-            min="0"
-            max="23"
-            value={automationConfig.eodDispatchHour}
-            onChange={e => setAutomationConfig({ ...automationConfig, eodDispatchHour: Math.min(23, Math.max(0, Number(e.target.value) || 18)) })}
-            className="w-full rounded-lg border border-clinical-200 px-3 py-2 text-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-100 outline-none"
-          />
-        </label>
-
-        <label className="flex items-start justify-between gap-3 rounded-lg border border-clinical-200 bg-clinical-50/60 p-2.5">
-          <span className="min-w-0">
-            <span className="block font-medium text-clinical-600">Immediate dispatch for Critical</span>
-            <span className="mt-0.5 block text-[10px] leading-snug text-clinical-400">
-              Skip the end-of-day batch for critical stock — draft and send right away.
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={automationConfig.criticalImmediate}
-            onChange={e => setAutomationConfig({ ...automationConfig, criticalImmediate: e.target.checked })}
-            className="mt-0.5 h-4 w-4 shrink-0 accent-primary-600"
-          />
-        </label>
-      </div>
-    </div>
-  );
-}
-
-// ── Delete confirmation modal ─────────────────────────────────
-
-function DeleteItemConfirm({ item, onConfirm, onCancel }: { item: InventoryRow; onConfirm: () => void; onCancel: () => void }) {
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center">
-      <button aria-label="Cancel" onClick={onCancel} className="absolute inset-0 bg-clinical-900/40" />
-      <div className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-        <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-alert-50 text-alert-600">
-            <IconTrash className="h-5 w-5" />
-          </div>
-          <div>
-            <p className="font-display text-base font-semibold text-clinical-900">Delete inventory item?</p>
-            <p className="mt-1 text-xs leading-relaxed text-clinical-500">
-              <strong className="text-clinical-700">{item.name}</strong> will be removed from the master supply list.
-              Historical deduction entries are retained in the audit log, but the item can no longer receive new deductions.
-            </p>
-          </div>
-        </div>
-        <div className="mt-6 flex justify-end gap-2">
-          <button onClick={onCancel} className="rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50">
-            Cancel
-          </button>
-          <button onClick={onConfirm} className="rounded-lg bg-alert-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-alert-700">
-            Delete Item
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Main Inventory component ──────────────────────────────────
 
 interface InventoryProps {
   initialEditItemName?: string | null;
+  onConsumeInitialEditItemName?: () => void;
   onNavigateToOrder?: (orderId: string) => void;
 }
 
-export default function Inventory({ initialEditItemName, onNavigateToOrder }: InventoryProps = {}) {
+export default function Inventory({
+  initialEditItemName,
+  onConsumeInitialEditItemName,
+  onNavigateToOrder,
+}: InventoryProps = {}) {
   const pageSize = 10;
   const {
     inventory,
@@ -1541,9 +1427,7 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
     getStockStatus,
     isExpired,
     isExpiringSoon,
-    acknowledgeAlert,
     saveInventoryItem,
-    removeInventoryItem,
   } = useClinic();
 
   const [primaryView, setPrimaryView] = useState<PrimaryView>('stock');
@@ -1552,9 +1436,7 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
   const [currentPage, setCurrentPage] = useState(1);
   const [itemDrawer, setItemDrawer] = useState<DrawerState | null>(null);
   const [batchItem, setBatchItem] = useState<InventoryRow | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<InventoryRow | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
 
   const connectedInventoryRows = useMemo(
     () => buildInventoryRows(inventory, inventoryAlertLog, orders, getStockStatus, isExpired, isExpiringSoon),
@@ -1583,14 +1465,22 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
     setCurrentPage(1);
   }, [filter, query]);
 
+  // Consume-once deep-link target — mirrors the `pendingOrderId` pattern in
+  // ClinicApp/OrderMonitoring. Without the ref guard this effect re-fires on
+  // every `connectedInventoryRows` change (which happens on every inventory
+  // mutation) and reopens the drawer mid-edit.
+  const consumedEditTargetRef = useRef<string | null>(null);
   useEffect(() => {
     if (!initialEditItemName) return;
+    if (consumedEditTargetRef.current === initialEditItemName) return;
     const item = connectedInventoryRows.find(row => row.name === initialEditItemName);
     if (item) {
       setPrimaryView('stock');
       setItemDrawer({ kind: 'edit', item });
     }
-  }, [connectedInventoryRows, initialEditItemName]);
+    consumedEditTargetRef.current = initialEditItemName;
+    onConsumeInitialEditItemName?.();
+  }, [connectedInventoryRows, initialEditItemName, onConsumeInitialEditItemName]);
 
   useEffect(() => {
     if (!menuId) return;
@@ -1604,18 +1494,6 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
     return () => document.removeEventListener('mousedown', closeOnOutsideClick);
   }, [menuId]);
 
-  useEffect(() => {
-    if (!showSettings) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      const target = event.target;
-      if (target instanceof Element && !target.closest('[data-inventory-settings]')) {
-        setShowSettings(false);
-      }
-    };
-    document.addEventListener('mousedown', closeOnOutsideClick);
-    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
-  }, [showSettings]);
-
   const tabs: { id: Filter; label: string; count: number }[] = [
     { id: 'expired', label: 'EXPIRED', count: connectedInventoryRows.filter(item => item.expiry === 'expired').length },
     { id: 'all', label: 'All', count: connectedInventoryRows.length },
@@ -1625,25 +1503,9 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
 
   return (
     <div className="mx-auto max-w-[1500px] p-6 lg:p-8">
-      <div className="mb-7 flex items-center justify-between">
-        <div>
-          <p className="font-display text-2xl font-semibold tracking-tight text-clinical-900">Inventory</p>
-          <p className="mt-0.5 text-xs text-clinical-500">Live stock, thresholds, and deduction history.</p>
-        </div>
-        <div className="relative" data-inventory-settings>
-          <button
-            onClick={() => setShowSettings(current => !current)}
-            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
-              showSettings
-                ? 'border-primary-300 bg-primary-50 text-primary-700'
-                : 'border-clinical-200 bg-white text-clinical-600 hover:border-primary-300'
-            }`}
-          >
-            <IconSettings className="h-4 w-4" />
-            Automation Settings
-          </button>
-          {showSettings && <AlertSettingsPopover onClose={() => setShowSettings(false)} />}
-        </div>
+      <div className="mb-7">
+        <p className="font-display text-2xl font-semibold tracking-tight text-clinical-900">Inventory</p>
+        <p className="mt-0.5 text-xs text-clinical-500">Live stock, thresholds, and deduction history.</p>
       </div>
 
       <div className="mb-6 inline-flex rounded-lg border border-clinical-200 bg-white p-0.5">
@@ -1725,8 +1587,8 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
                 <tr className="border-b border-clinical-200 bg-clinical-50/80 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
                   <th className="min-w-44 px-5 py-3.5">Item</th>
                   <th className="min-w-28 px-4 py-3.5">Usable Qty</th>
-                  <th className="min-w-44 px-4 py-3.5">Expiry</th>
                   <th className="min-w-32 px-4 py-3.5">Stock Status</th>
+                  <th className="min-w-44 px-4 py-3.5">Expiry</th>
                   <th className="min-w-64 px-4 py-3.5">System Action</th>
                   <th className="sticky right-0 w-12 bg-clinical-50 px-3 py-3.5">
                     <span className="sr-only">Actions</span>
@@ -1747,16 +1609,15 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
                       <p className="mt-2 text-xs text-clinical-400">{item.unit}</p>
                     </td>
                     <td className="px-4 py-5 align-top">
-                      <ExpiryCell item={item} />
+                      <StatusBadge status={item.stock} />
                     </td>
                     <td className="px-4 py-5 align-top">
-                      <StatusBadge status={item.stock} />
+                      <ExpiryCell item={item} />
                     </td>
                     <td className="px-4 py-5 align-top">
                       <SystemAction
                         item={item}
                         onManage={() => setBatchItem(item)}
-                        onAcknowledge={() => item.activeAlert && acknowledgeAlert(item.activeAlert.id)}
                         onViewOrder={(orderId) => onNavigateToOrder?.(orderId)}
                         onViewDeductions={() => setItemDrawer({ kind: 'view', item })}
                       />
@@ -1792,14 +1653,6 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
                             >
                               <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" />
                               Manage Batches
-                            </button>
-                            <div className="my-1 border-t border-clinical-100" />
-                            <button
-                              onClick={() => { setDeleteTarget(item); setMenuId(null); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-alert-700 hover:bg-alert-50"
-                            >
-                              <IconTrash className="h-4 w-4 shrink-0 text-alert-500" />
-                              Delete Item
                             </button>
                           </div>
                         )}
@@ -1849,7 +1702,6 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
       {primaryView === 'alerts' && (
         <AlertsView
           rows={connectedInventoryRows}
-          onAcknowledge={acknowledgeAlert}
           onViewOrder={(id) => onNavigateToOrder?.(id)}
           onViewItem={(row) => setItemDrawer({ kind: 'view', item: row })}
           onManageBatches={(row) => setBatchItem(row)}
@@ -1866,17 +1718,6 @@ export default function Inventory({ initialEditItemName, onNavigateToOrder }: In
       )}
 
       {batchItem && <BatchDrawer item={batchItem} onClose={() => setBatchItem(null)} />}
-
-      {deleteTarget && (
-        <DeleteItemConfirm
-          item={deleteTarget}
-          onCancel={() => setDeleteTarget(null)}
-          onConfirm={() => {
-            removeInventoryItem(deleteTarget.id);
-            setDeleteTarget(null);
-          }}
-        />
-      )}
     </div>
   );
 }

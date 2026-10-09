@@ -187,18 +187,49 @@ function OverrideClassificationModal({
   onClose: () => void;
   onApply: (cls: ResponseClass, reason?: string) => void;
 }) {
-  const [cls, setCls] = useState<ResponseClass>(order.responseClass ?? 'confirmed');
+  // An order reaches this modal either because it was auto-classified as
+  // `unclear` (needs the doctor to say what the reply actually means), or
+  // because the doctor is correcting an already-classified response.
+  // The `unclear` sentinel is never a valid target — it's the absence of a
+  // classification the parser could act on.
+  const isInitialClassification = !order.responseClass || order.responseClass === 'unclear';
+
+  const initialCls: ResponseClass =
+    order.responseClass && order.responseClass !== 'unclear' ? order.responseClass : 'confirmed';
+  const [cls, setCls] = useState<ResponseClass>(initialCls);
   const [reason, setReason] = useState('');
 
   const currentLabel = order.responseClass ? RESPONSE_LABELS[order.responseClass] : 'Not yet classified';
-  const options: { id: ResponseClass; label: string; hint: string; tone: string }[] = [
-    { id: 'confirmed',    label: 'Confirmed',    hint: 'Supplier said yes — send order to Being Delivered.', tone: 'success' },
-    { id: 'unavailable',  label: 'Unavailable',  hint: 'Supplier said no — reroute to next backup supplier.', tone: 'alert' },
-    { id: 'no_response',  label: 'No Response',  hint: 'Supplier went silent — reroute to next backup supplier.', tone: 'alert' },
+  const options: { id: ResponseClass; label: string; hint: string; tone: 'success' | 'alert' }[] = [
+    {
+      id: 'confirmed',
+      label: 'Proceed — order will go through',
+      hint: 'Move the order to Being Delivered. Use this after clarifying with the supplier.',
+      tone: 'success',
+    },
+    {
+      id: 'unavailable',
+      label: 'Reroute — supplier can\u2019t fulfill',
+      hint: 'Auto-send to the next backup supplier in the chain.',
+      tone: 'alert',
+    },
+    {
+      id: 'no_response',
+      label: 'Reroute — no reply from supplier',
+      hint: 'Treat as timed out and auto-send to the next backup supplier.',
+      tone: 'alert',
+    },
   ];
+
+  // For an ambiguous reply being asserted as Proceed, the audit trail needs
+  // the doctor's own words — otherwise there is no record of why the order
+  // was allowed through when the supplier never said "yes" in writing.
+  const reasonRequired = isInitialClassification && cls === 'confirmed';
+  const canSubmit = !reasonRequired || reason.trim().length > 0;
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+    if (!canSubmit) return;
     onApply(cls, reason.trim() || undefined);
   };
 
@@ -210,7 +241,9 @@ function OverrideClassificationModal({
       >
         <div className="flex items-start justify-between border-b border-clinical-200 px-6 py-5">
           <div>
-            <p className="font-display text-lg font-semibold text-clinical-900">Override classification</p>
+            <p className="font-display text-lg font-semibold text-clinical-900">
+              {isInitialClassification ? 'Classify supplier response' : 'Override classification'}
+            </p>
             <p className="mt-0.5 text-xs text-clinical-500">
               {order.poRef} · Currently: <span className="font-semibold text-clinical-700">{currentLabel}</span>
             </p>
@@ -221,10 +254,18 @@ function OverrideClassificationModal({
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-          <p className="text-xs leading-relaxed text-clinical-500">
-            Reclassify the supplier response at any time. The order will follow the new
-            path immediately, and the change is recorded in the audit trail.
-          </p>
+          {isInitialClassification ? (
+            <p className="text-xs leading-relaxed text-clinical-500">
+              The supplier&rsquo;s reply wasn&rsquo;t clear enough to classify automatically. If it reads like a
+              question &mdash; <em>&ldquo;which variant?&rdquo;</em>, <em>&ldquo;which size?&rdquo;</em> &mdash; call the supplier to clarify,
+              then record the outcome below.
+            </p>
+          ) : (
+            <p className="text-xs leading-relaxed text-clinical-500">
+              Reclassify the supplier response at any time. The order will follow the new
+              path immediately, and the change is recorded in the audit trail.
+            </p>
+          )}
 
           <div className="space-y-2">
             {options.map(opt => {
@@ -258,15 +299,33 @@ function OverrideClassificationModal({
 
           <label className="block">
             <span className="mb-1.5 block text-xs font-semibold text-clinical-700">
-              Reason <span className="font-normal text-clinical-400">(optional)</span>
+              Reason{' '}
+              {reasonRequired ? (
+                <span className="font-normal text-alert-600">(required)</span>
+              ) : (
+                <span className="font-normal text-clinical-400">(optional)</span>
+              )}
             </span>
             <textarea
               value={reason}
               onChange={e => setReason(e.target.value)}
               rows={2}
-              placeholder="e.g. Called supplier — 5ml version available, confirming shipment"
-              className="w-full resize-none rounded-lg border border-clinical-200 bg-white px-3 py-2 text-sm text-clinical-800 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 placeholder:text-clinical-300"
+              placeholder={
+                reasonRequired
+                  ? 'e.g. Called supplier — confirmed 5ml variant, shipping tomorrow'
+                  : 'e.g. Called supplier — 5ml version available, confirming shipment'
+              }
+              className={`w-full resize-none rounded-lg border bg-white px-3 py-2 text-sm text-clinical-800 outline-none transition focus:ring-2 placeholder:text-clinical-300 ${
+                reasonRequired && !canSubmit
+                  ? 'border-alert-300 focus:border-alert-500 focus:ring-alert-100'
+                  : 'border-clinical-200 focus:border-primary-500 focus:ring-primary-100'
+              }`}
             />
+            {reasonRequired && !canSubmit && (
+              <p className="mt-1 text-[10px] text-alert-600">
+                A short reason is required — the supplier never said &ldquo;yes&rdquo; in writing, so this is the only record of why the order proceeds.
+              </p>
+            )}
           </label>
         </div>
 
@@ -280,9 +339,10 @@ function OverrideClassificationModal({
           </button>
           <button
             type="submit"
-            className="rounded-lg bg-primary-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-primary-800"
+            disabled={!canSubmit}
+            className="rounded-lg bg-primary-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-primary-800 disabled:cursor-not-allowed disabled:bg-clinical-200 disabled:text-clinical-400"
           >
-            Apply Override
+            {isInitialClassification ? 'Record classification' : 'Apply override'}
           </button>
         </div>
       </form>
@@ -298,14 +358,14 @@ function TimelineDrawer({
   onClose,
   onCancelOrder,
   onReceiveDelivery,
-  onClassify,
+  onOpenClassify,
 }: {
   order: SupplyOrder;
   timeline: OrderTimelineEvent[];
   onClose: () => void;
   onCancelOrder: (orderId: string) => void;
   onReceiveDelivery: (order: SupplyOrder) => void;
-  onClassify: (orderId: string, cls: ResponseClass, isOverride: boolean) => void;
+  onOpenClassify: (order: SupplyOrder) => void;
 }) {
   const { suppliers } = useClinic();
   const supplier = suppliers.find(s => s.id === order.supplierId);
@@ -314,6 +374,7 @@ function TimelineDrawer({
   const [selectedEmail, setSelectedEmail] = useState<{ snippet: EmailSnippet; date: string } | null>(null);
   const requiresIntervention = isActionRequired(order.status);
   const canAct = !isTerminal(order.status);
+  const isUnclear = order.status === 'unclear';
 
   return (
     <>
@@ -409,41 +470,20 @@ function TimelineDrawer({
               </div>
             </div>
 
-            <div>
-              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-clinical-500">
-                Reclassify response as:
-              </p>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => { onClassify(order.id, 'confirmed', true); onClose(); }}
-                  className="rounded-md border border-success-200 bg-success-50 px-2.5 py-1.5 text-[11px] font-semibold text-success-700 hover:bg-success-100"
-                >
-                  Confirmed
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { onClassify(order.id, 'unavailable', true); onClose(); }}
-                  className="rounded-md border border-alert-200 bg-alert-50 px-2.5 py-1.5 text-[11px] font-semibold text-alert-700 hover:bg-alert-100"
-                >
-                  Unavailable
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { onClassify(order.id, 'no_response', true); onClose(); }}
-                  className="rounded-md border border-alert-200 bg-alert-50 px-2.5 py-1.5 text-[11px] font-semibold text-alert-700 hover:bg-alert-100"
-                >
-                  No Response
-                </button>
-              </div>
-            </div>
+            <button
+              type="button"
+              onClick={() => onOpenClassify(order)}
+              className="w-full rounded-lg bg-primary-700 px-3 py-2.5 text-xs font-semibold text-white hover:bg-primary-800"
+            >
+              {isUnclear ? 'Classify response…' : 'Override classification…'}
+            </button>
 
             <div className="flex items-center gap-2">
               <button
                 onClick={() => { onReceiveDelivery(order); onClose(); }}
                 className="flex-1 rounded-lg bg-success-600 px-3 py-2.5 text-xs font-semibold text-white hover:bg-success-700"
               >
-                Mark Received
+                Confirm Received
               </button>
               <button
                 onClick={() => { onCancelOrder(order.id); onClose(); }}
@@ -732,115 +772,6 @@ function InvoiceDrawer({ order, inventory, onClose }: { order: SupplyOrder; inve
   );
 }
 
-// ── Receive modal ─────────────────────────────────────────────
-
-interface DeliveryFields {
-  qty: string;
-  lot: string;
-  expiration: string;
-}
-
-function ReceiveModal({
-  order,
-  items,
-  onClose,
-  onConfirmed,
-}: {
-  order: SupplyOrder;
-  items: InventoryItem[];
-  onClose: () => void;
-  onConfirmed: (itemNames: string[]) => void;
-}) {
-  const { suppliers } = useClinic();
-  const supplier = suppliers.find(s => s.id === order.supplierId);
-  const [fields, setFields] = useState<Record<string, DeliveryFields>>(() => Object.fromEntries(items.map(item => [
-    item.id,
-    {
-      qty: String(order.qty),
-      lot: '',
-      expiration: '',
-    },
-  ])));
-  const valid = items.every(item => {
-    const itemFields = fields[item.id];
-    const perishable = item.batches.length > 0;
-    return Number(itemFields?.qty) > 0
-      && (!perishable || (itemFields.lot.trim() !== '' && itemFields.expiration !== ''));
-  });
-  const inputClass = 'mt-1.5 w-full rounded-lg border border-clinical-200 bg-white px-3 py-2.5 text-sm text-clinical-800 outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-100';
-  const updateField = (itemId: string, field: keyof DeliveryFields, value: string) => {
-    setFields(current => ({
-      ...current,
-      [itemId]: { ...current[itemId], [field]: value },
-    }));
-  };
-
-  return (
-    <Overlay align="center" onClose={onClose}>
-      <section className="relative flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-clinical-200 px-7 py-5">
-          <div>
-            <p className="font-display text-lg font-semibold text-clinical-900">{supplier?.name ?? order.supplierId}</p>
-            <p className="mt-0.5 text-xs text-clinical-500">{order.poRef} · Delivery</p>
-          </div>
-          <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100"><IconX className="h-5 w-5" /></button>
-        </div>
-        <div className="flex-1 overflow-y-auto px-7 py-6">
-          <div className="rounded-xl border border-primary-100 bg-primary-50 p-4">
-            <p className="text-sm font-semibold text-primary-900">Confirm received quantity</p>
-            <p className="mt-0.5 text-xs text-primary-700">
-              Verify physical stock, then enter batch/lot details for perishable items.
-            </p>
-          </div>
-          <div className="mt-6 space-y-3">
-            {items.map(item => {
-              const perishable = item.batches.length > 0;
-              const itemFields = fields[item.id];
-              return (
-                <div key={item.id} className="rounded-xl border border-clinical-200 p-5">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-clinical-900">{item.name}</p>
-                      <p className="mt-1 text-xs text-clinical-500">
-                        {item.category} · {perishable ? 'expiration tracking required' : 'non-perishable'}
-                      </p>
-                    </div>
-                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${perishable ? 'bg-warning-50 text-warning-700' : 'bg-clinical-100 text-clinical-600'}`}>
-                      {itemFields.qty} {item.unit} expected
-                    </span>
-                  </div>
-                  <div className={`mt-4 grid gap-4 ${perishable ? 'grid-cols-3' : 'grid-cols-2'}`}>
-                    <label className="text-xs font-semibold text-clinical-600">
-                      Qty Received
-                      <input type="number" min="0" value={itemFields.qty} onChange={event => updateField(item.id, 'qty', event.target.value)} className={inputClass} />
-                    </label>
-                    <label className="text-xs font-semibold text-clinical-600">
-                      Batch / Lot ID {perishable ? <span className="text-alert-600">*</span> : <span className="font-normal text-clinical-400">Optional</span>}
-                      <input value={itemFields.lot} onChange={event => updateField(item.id, 'lot', event.target.value)} placeholder={perishable ? 'Required' : 'Optional'} className={inputClass} />
-                    </label>
-                    {perishable && (
-                      <label className="text-xs font-semibold text-clinical-600">
-                        Expiration Date <span className="text-alert-600">*</span>
-                        <input type="date" value={itemFields.expiration} onChange={event => updateField(item.id, 'expiration', event.target.value)} className={inputClass} />
-                      </label>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div className="flex items-center justify-between border-t border-clinical-200 bg-clinical-50 px-7 py-5">
-          <p className="text-xs text-clinical-500">{valid ? `Ready to update ${items.length} inventory items.` : 'Complete required fields to continue.'}</p>
-          <button onClick={() => valid && onConfirmed(items.map(item => item.name))} disabled={!valid} className="flex items-center gap-2 rounded-lg bg-success-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-success-700 disabled:cursor-not-allowed disabled:bg-clinical-200 disabled:text-clinical-400">
-            <IconCheck className="h-4 w-4" /> Confirm &amp; Update Stock
-          </button>
-        </div>
-      </section>
-    </Overlay>
-  );
-}
-
 // ── Main OrderMonitoring component ───────────────────────────
 
 interface OrderMonitoringProps {
@@ -869,11 +800,16 @@ export default function OrderMonitoring({
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<SupplyOrder | null>(null);
   const [timelineOpen, setTimelineOpen] = useState(false);
-  const [receiveOrder, setReceiveOrder] = useState<SupplyOrder | null>(null);
   const [invoiceOrder, setInvoiceOrder] = useState<SupplyOrder | null>(null);
   const [poOrder, setPoOrder] = useState<SupplyOrder | null>(null);
   const [overrideTarget, setOverrideTarget] = useState<SupplyOrder | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
+  // Inline "Confirm Received" link is a one-click action placed next to
+  // other row-level links. Holding the target here lets the first click
+  // swap the link for a Confirm / Cancel pair so a same-cell misclick
+  // (aiming for "View order timeline" and landing on Confirm) can be
+  // undone without completing the order.
+  const [pendingReceiveId, setPendingReceiveId] = useState<string | null>(null);
   const pageSize = 5;
 
   const consumedInitialOrderRef = useRef<string | null>(null);
@@ -977,7 +913,14 @@ export default function OrderMonitoring({
                   l => l.orderId === order.id && l.deliveryStatus === 'bounced'
                 );
                 const canAct = !isTerminal(order.status);
-                const canOverride = canAct && order.status !== 'unclear';
+                // Any non-terminal order can be reclassified. For `unclear`
+                // orders this is the *first* classification (the doctor
+                // decides what the ambiguous reply means); for others it's an
+                // override of an already-classified response. Same modal,
+                // different copy.
+                const canOverride = canAct;
+                const isUnclear = order.status === 'unclear';
+                const canReceive = canReceiveDelivery(order.status);
                 return (
                   <tr key={order.id} className="group transition hover:bg-clinical-50/60">
                     <td className="px-4 py-5 align-top">
@@ -1006,7 +949,7 @@ export default function OrderMonitoring({
                               ? `Triggered by ${linkedAlert.severity} alert at ${linkedAlert.qty} ${order.unit}`
                               : order.originalOrderId
                                 ? 'Auto-rerouted from earlier supplier'
-                                : 'Manually queued'}
+                                : 'Auto-drafted by stock watcher'}
                           </p>
 		          {bouncedLog && (
                             <div className="mt-2 flex items-start gap-1.5 rounded-md border border-alert-200 bg-alert-50 px-2 py-1.5">
@@ -1022,21 +965,34 @@ export default function OrderMonitoring({
                             </button>
                           )}
                           {order.status === 'being_delivered' && (
-                            <button onClick={() => setReceiveOrder(order)} className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-primary-700 hover:text-primary-900">
-                              <IconPackage className="h-3.5 w-3.5" /> Receive delivery <IconChevronRight className="h-3.5 w-3.5" />
-                            </button>
+                            pendingReceiveId === order.id ? (
+                              <div className="mt-2 flex items-center gap-1.5">
+                                <button
+                                  onClick={() => { confirmReceived(order.id); setPendingReceiveId(null); }}
+                                  className="inline-flex items-center gap-1 rounded-md border border-success-200 bg-success-50 px-2.5 py-1 text-xs font-semibold text-success-700 hover:bg-success-100"
+                                >
+                                  <IconCheck className="h-3.5 w-3.5" /> Confirm
+                                </button>
+                                <button
+                                  onClick={() => setPendingReceiveId(null)}
+                                  className="rounded-md px-2 py-1 text-xs font-medium text-clinical-500 hover:text-clinical-800"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setPendingReceiveId(order.id)}
+                                className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-primary-700 hover:text-primary-900"
+                              >
+                                <IconPackage className="h-3.5 w-3.5" /> Confirm Received <IconChevronRight className="h-3.5 w-3.5" />
+                              </button>
+                            )
                           )}
                           {isActionRequired(order.status) && (
                             <button onClick={() => openTimeline(order)} className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-alert-700 hover:text-alert-600">
                               <IconAlert className="h-3.5 w-3.5" /> Resolve dead end <IconChevronRight className="h-3.5 w-3.5" />
                             </button>
-                          )}
-                          {order.status === 'unclear' && (
-                            <div className="mt-3 flex items-center gap-1.5">
-                              <span className="text-[10px] text-clinical-500 mr-1">Classify:</span>
-                              <button onClick={() => classifyResponse(order.id, 'confirmed', false)} className="px-2 py-1 bg-success-600 text-white text-[10px] font-bold rounded hover:bg-success-700">Confirmed</button>
-                              <button onClick={() => classifyResponse(order.id, 'unavailable', false)} className="px-2 py-1 bg-alert-600 text-white text-[10px] font-bold rounded hover:bg-alert-700">Unavailable</button>
-                            </div>
                           )}
                         </div>
                       </div>
@@ -1046,19 +1002,10 @@ export default function OrderMonitoring({
                         <button onClick={() => setMenuId(menuId === order.id ? null : order.id)} aria-label={`Actions for ${order.poRef}`} className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800"><IconMoreVertical className="h-5 w-5" /></button>
                         {menuId === order.id && (
                           <div className="absolute right-0 top-full z-50 mt-2 w-60 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
+                            {/* Read-only group */}
                             <button onClick={() => { setPoOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                               <IconPrinter className="h-4 w-4 shrink-0 text-clinical-500" /> Preview purchase order
                             </button>
-                            {canOverride && (
-                              <button onClick={() => { setOverrideTarget(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
-                                <IconExternalLink className="h-4 w-4 shrink-0 text-clinical-500" /> Override classification…
-                              </button>
-                            )}
-                            {canReceiveDelivery(order.status) && (
-                              <button onClick={() => { setReceiveOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
-                                <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" /> Receive delivery
-                              </button>
-                            )}
                             {order.status === 'completed' && (
                               <button onClick={() => { setInvoiceOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                                 <IconFileText className="h-4 w-4 shrink-0 text-clinical-500" /> View invoice
@@ -1067,16 +1014,23 @@ export default function OrderMonitoring({
                             <button onClick={() => { openTimeline(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                               <IconClock className="h-4 w-4 shrink-0 text-clinical-500" /> View audit trail
                             </button>
-                            {canAct && (
-                              <>
-                                <div className="my-1 border-t border-clinical-100" />
-                                <button
-                                  onClick={() => { cancelOrder(order.id); setMenuId(null); }}
-                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-alert-700 hover:bg-alert-50"
-                                >
-                                  <IconX className="h-4 w-4 shrink-0 text-alert-500" /> Cancel order
-                                </button>
-                              </>
+
+                            {/* Divider only when a consequential action follows */}
+                            {(canOverride || canReceive) && (
+                              <div className="my-1 border-t border-clinical-100" />
+                            )}
+
+                            {/* Consequential group */}
+                            {canOverride && (
+                              <button onClick={() => { setOverrideTarget(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                                <IconExternalLink className="h-4 w-4 shrink-0 text-clinical-500" />
+                                {isUnclear ? 'Classify response…' : 'Override classification…'}
+                              </button>
+                            )}
+                            {canReceive && (
+                              <button onClick={() => { confirmReceived(order.id); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                                <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" /> Confirm Received
+                              </button>
                             )}
                           </div>
                         )}
@@ -1107,8 +1061,12 @@ export default function OrderMonitoring({
           timeline={orderTimeline.filter(e => e.orderId === selected.id).sort((a, b) => a.ts - b.ts)}
           onClose={() => { setTimelineOpen(false); setSelected(null); }}
           onCancelOrder={cancelOrder}
-          onReceiveDelivery={(o) => setReceiveOrder(o)}
-          onClassify={(id, cls, isOverride) => classifyResponse(id, cls, isOverride)}
+          onReceiveDelivery={(o) => confirmReceived(o.id)}
+          onOpenClassify={(o) => {
+            setOverrideTarget(o);
+            setTimelineOpen(false);
+            setSelected(null);
+          }}
         />
       )}
       {poOrder && <PODrawer order={poOrder} onClose={() => setPoOrder(null)} />}
@@ -1120,17 +1078,6 @@ export default function OrderMonitoring({
           onApply={(cls, reason) => {
             classifyResponse(overrideTarget.id, cls, true, reason);
             setOverrideTarget(null);
-          }}
-        />
-      )}
-      {receiveOrder && (
-        <ReceiveModal
-          order={receiveOrder}
-          items={inventory.filter(i => i.id === receiveOrder.itemId)}
-          onClose={() => setReceiveOrder(null)}
-          onConfirmed={() => {
-            confirmReceived(receiveOrder.id);
-            setReceiveOrder(null);
           }}
         />
       )}
