@@ -1,0 +1,966 @@
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  IconAlert,
+  IconCheck,
+  IconChevronRight,
+  IconClock,
+  IconDownload,
+  IconExternalLink,
+  IconFileText,
+  IconLock,
+  IconMail,
+  IconMoreVertical,
+  IconPackage,
+  IconPause,
+  IconPlay,
+  IconPrinter,
+  IconScan,
+  IconSearch,
+  IconSettings,
+  IconTruck,
+  IconX,
+} from '../icons';
+import { ACTIVE_INVENTORY_ROWS, type InventoryRow } from './Inventory';
+
+type MonitorStatus = 'action' | 'pending' | 'completed';
+type DrawerView = 'timeline' | null;
+
+interface MonitorOrder {
+  id: string;
+  po: string;
+  timestamp: string;
+  supplier: string;
+  route: string;
+  status: MonitorStatus;
+  statusLabel: string;
+  itemCount: number;
+  itemName: string;
+  summary: string;
+  automation: string;
+  action?: 'resolve' | 'timeline' | 'receive';
+}
+
+interface EmailSnippet {
+  sender: string;
+  before: string;
+  keyword: string;
+  after: string;
+}
+
+const ORDERS: MonitorOrder[] = [
+  { id: '8496', po: 'PO #8496', timestamp: 'Today, 10:42 AM', supplier: 'DentaCore Supply', route: 'Backup 2 · Final route', status: 'action', statusLabel: 'Intervention required', itemCount: 1, itemName: 'Dental Cement', summary: 'No supplier can fulfill', automation: 'All 3 supplier routes exhausted', action: 'resolve' },
+  { id: '8495', po: 'PO #8495', timestamp: 'Today, 9:18 AM', supplier: 'Schein Dental', route: 'Backup · Auto-reroute', status: 'pending', statusLabel: 'Being delivered', itemCount: 4, itemName: 'Topical Anesthetic Gel', summary: 'Partial stock recovery', automation: 'Rule output: 2 confirmed · 2 rerouted', action: 'timeline' },
+  { id: '8494', po: 'PO #8494', timestamp: 'Yesterday, 4:06 PM', supplier: 'Henry Schein', route: 'Primary', status: 'pending', statusLabel: 'Being delivered', itemCount: 2, itemName: 'Bonding Agent', summary: 'Full order confirmed', automation: 'Delivery expected today', action: 'receive' },
+  { id: '8493', po: 'PO #8493', timestamp: 'Yesterday, 2:31 PM', supplier: 'Patterson Dental', route: 'Primary', status: 'pending', statusLabel: 'Awaiting response', itemCount: 3, itemName: 'Rubber Dam', summary: 'Standard replenishment', automation: 'Follow-up scheduled in 2 hours', action: 'timeline' },
+  { id: '8492', po: 'PO #8492', timestamp: 'Yesterday, 11:20 AM', supplier: 'GC Dental', route: 'Backup · Auto-reroute', status: 'pending', statusLabel: 'Rerouting order', itemCount: 1, itemName: 'Composite Resin A2', summary: 'Primary supplier unavailable', automation: 'Keyword rule matched · backup PO sent', action: 'timeline' },
+  { id: '8491', po: 'PO #8491', timestamp: 'Sep 22, 3:42 PM', supplier: 'Schein Dental', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 6, itemName: 'Nitrile Examination Gloves', summary: 'Stock ledger updated', automation: 'Receipt matched · reconciliation complete' },
+  { id: '8490', po: 'PO #8490', timestamp: 'Sep 22, 10:15 AM', supplier: 'DentaCore Supply', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 2, itemName: 'Dental Bibs', summary: 'Full order received', automation: 'Receipt matched · reconciliation complete' },
+  { id: '8489', po: 'PO #8489', timestamp: 'Sep 21, 4:50 PM', supplier: 'Patterson Dental', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 3, itemName: 'Cotton Rolls', summary: 'Full order received', automation: 'Receipt matched · reconciliation complete' },
+  { id: '8488', po: 'PO #8488', timestamp: 'Sep 21, 1:08 PM', supplier: 'Henry Schein', route: 'Backup · Auto-reroute', status: 'completed', statusLabel: 'Completed', itemCount: 1, itemName: 'Anesthetic Carpule 2%', summary: 'Recovered through backup', automation: 'Received after automatic reroute' },
+  { id: '8487', po: 'PO #8487', timestamp: 'Sep 20, 11:44 AM', supplier: 'GC Dental', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 5, itemName: 'Prophy Paste', summary: 'Full order received', automation: 'Receipt matched · reconciliation complete' },
+  { id: '8486', po: 'PO #8486', timestamp: 'Sep 19, 3:16 PM', supplier: 'Schein Dental', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 2, itemName: 'Etching Gel', summary: 'Full order received', automation: 'Receipt matched · reconciliation complete' },
+  { id: '8485', po: 'PO #8485', timestamp: 'Sep 19, 9:25 AM', supplier: 'DentaCore Supply', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 4, itemName: 'Sterilization Pouches', summary: 'Full order received', automation: 'Receipt matched · reconciliation complete' },
+  { id: '8484', po: 'PO #8484', timestamp: 'Sep 18, 2:09 PM', supplier: 'Patterson Dental', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 1, itemName: 'Articulating Paper', summary: 'Full order received', automation: 'Receipt matched · reconciliation complete' },
+  { id: '8483', po: 'PO #8483', timestamp: 'Sep 17, 4:32 PM', supplier: 'Henry Schein', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 3, itemName: 'Micro Applicators', summary: 'Full order received', automation: 'Receipt matched · reconciliation complete' },
+  { id: '8482', po: 'PO #8482', timestamp: 'Sep 16, 10:02 AM', supplier: 'GC Dental', route: 'Primary', status: 'completed', statusLabel: 'Completed', itemCount: 2, itemName: 'Fluoride Varnish', summary: 'Full order received', automation: 'Receipt matched · reconciliation complete' },
+];
+
+const INVENTORY_BY_NAME = new Map(ACTIVE_INVENTORY_ROWS.map(item => [item.name, item]));
+
+function getDeliveryItems(order: MonitorOrder) {
+  const primaryItem = INVENTORY_BY_NAME.get(order.itemName);
+  if (!primaryItem) return [];
+  const primaryIsPerishable = primaryItem.expiry !== 'none';
+  const mixedItem = ACTIVE_INVENTORY_ROWS.find(item =>
+    item.id !== primaryItem.id && (item.expiry !== 'none') !== primaryIsPerishable
+  );
+  return mixedItem ? [primaryItem, mixedItem] : [primaryItem];
+}
+
+function StatusBadge({ order }: { order: MonitorOrder }) {
+  const statusClass = order.status === 'action'
+    ? 'border-alert-100 bg-alert-50 text-alert-700'
+    : order.status === 'completed'
+      ? 'border-success-100 bg-success-50 text-success-700'
+      : order.statusLabel === 'Being delivered'
+        ? 'border-primary-100 bg-primary-50 text-primary-700'
+        : 'border-warning-100 bg-warning-50 text-warning-700';
+  const Icon = order.status === 'action' ? IconAlert : order.status === 'completed' ? IconCheck : order.statusLabel === 'Being delivered' ? IconTruck : IconClock;
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${statusClass}`}>
+      <Icon className="h-3.5 w-3.5" />
+      {order.statusLabel}
+    </span>
+  );
+}
+
+function Overlay({ children, align = 'right', onClose }: { children: ReactNode; align?: 'right' | 'center'; onClose: () => void }) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <div className={`fixed inset-0 z-50 flex ${align === 'right' ? 'justify-end' : 'items-center justify-center p-6'}`}>
+      <button aria-label="Close overlay" onClick={onClose} className="absolute inset-0 bg-clinical-900/30" />
+      {children}
+    </div>
+  );
+}
+
+function FullEmailModal({
+  order,
+  snippet,
+  date,
+  onClose,
+}: {
+  order: MonitorOrder;
+  snippet: EmailSnippet;
+  date: string;
+  onClose: () => void;
+}) {
+  return (
+    <Overlay align="center" onClose={onClose}>
+      <section className="relative flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-clinical-200 px-6 py-5">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-clinical-400">Supplier email</p>
+            <p className="mt-1.5 font-display text-lg font-semibold text-clinical-900">Re: {order.po} purchase order</p>
+          </div>
+          <button onClick={onClose} aria-label="Close email" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
+            <IconX className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-6 py-6">
+          <div className="rounded-xl border border-clinical-200 bg-clinical-50 p-4">
+            <div className="grid grid-cols-4 gap-x-3 gap-y-2 text-sm">
+              <span className="font-semibold text-clinical-400">From</span>
+              <span className="col-span-3 text-clinical-700">{snippet.sender}</span>
+              <span className="font-semibold text-clinical-400">To</span>
+              <span className="col-span-3 text-clinical-700">procurement@premierdental.ph</span>
+              <span className="font-semibold text-clinical-400">Date</span>
+              <span className="col-span-3 text-clinical-700">{date}</span>
+            </div>
+          </div>
+          <div className="mt-6 whitespace-pre-line text-sm leading-7 text-clinical-700">
+            {`Hello Premier Dental,\n\nThank you for your purchase order. ${snippet.before}${snippet.keyword}${snippet.after}\n\nPlease contact our order desk if you require an alternative item or an updated availability estimate.\n\nRegards,\n${order.supplier} Order Desk`}
+          </div>
+        </div>
+      </section>
+    </Overlay>
+  );
+}
+
+function EmailComposerModal({
+  order,
+  onClose,
+  onSend,
+}: {
+  order: MonitorOrder;
+  onClose: () => void;
+  onSend: () => void;
+}) {
+  const [recipient, setRecipient] = useState(`orders@${order.supplier.toLowerCase().replace(/[^a-z0-9]+/g, '')}.com`);
+  const [subject, setSubject] = useState(`Manual procurement request · ${order.po}`);
+  const [message, setMessage] = useState(
+    `Hello ${order.supplier} Order Desk,\n\nWe are following up manually regarding ${order.po} for ${order.itemName}. Please confirm whether an alternative product or fulfillment date is available.\n\nRegards,\nPremier Dental Procurement`,
+  );
+  const inputClass = 'w-full rounded-lg border border-clinical-200 bg-white px-3 py-2.5 text-sm text-clinical-800 outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-100';
+  const canSend = recipient.trim() !== '' && subject.trim() !== '' && message.trim() !== '';
+
+  return (
+    <Overlay align="center" onClose={onClose}>
+      <section className="relative flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-clinical-200 px-6 py-5">
+          <div>
+            <p className="font-display text-lg font-semibold text-clinical-900">Draft manual email</p>
+            <p className="mt-1 text-xs text-clinical-500">{order.po} · {order.itemName}</p>
+          </div>
+          <button onClick={onClose} aria-label="Close composer" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
+            <IconX className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex-1 space-y-4 overflow-y-auto px-6 py-6">
+          <label className="block text-xs font-semibold text-clinical-600">
+            To
+            <input value={recipient} onChange={event => setRecipient(event.target.value)} className={`mt-1.5 ${inputClass}`} />
+          </label>
+          <label className="block text-xs font-semibold text-clinical-600">
+            Subject
+            <input value={subject} onChange={event => setSubject(event.target.value)} className={`mt-1.5 ${inputClass}`} />
+          </label>
+          <label className="block text-xs font-semibold text-clinical-600">
+            Message
+            <textarea value={message} onChange={event => setMessage(event.target.value)} rows={9} className={`mt-1.5 resize-none ${inputClass}`} />
+          </label>
+        </div>
+        <div className="flex items-center justify-end gap-3 border-t border-clinical-200 bg-clinical-50 px-6 py-4">
+          <button onClick={onClose} className="rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-100">Cancel</button>
+          <button onClick={onSend} disabled={!canSend} className="inline-flex items-center gap-2 rounded-lg bg-primary-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary-800 disabled:cursor-not-allowed disabled:bg-clinical-200 disabled:text-clinical-400">
+            <IconMail className="h-4 w-4" /> Send Email
+          </button>
+        </div>
+      </section>
+    </Overlay>
+  );
+}
+
+function addMinutesToTimestamp(timestamp: string, minutesToAdd: number) {
+  const match = timestamp.match(/(\d{1,2}):(\d{2})\s(AM|PM)/);
+  if (!match) return timestamp;
+  let hours = Number(match[1]) % 12;
+  if (match[3] === 'PM') hours += 12;
+  const date = new Date(2026, 0, 1, hours, Number(match[2]) + minutesToAdd);
+  const formattedTime = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return timestamp.replace(match[0], formattedTime);
+}
+
+function getAuditEvents(order: MonitorOrder) {
+  const supplierEmail = `orders@${order.supplier.toLowerCase().replace(/[^a-z0-9]+/g, '')}.com`;
+  const event = (
+    offset: number,
+    icon: typeof IconPackage,
+    title: string,
+    detail: string,
+    tone = 'primary',
+    emailSnippet?: EmailSnippet,
+  ) => ({
+    time: addMinutesToTimestamp(order.timestamp, offset),
+    icon,
+    title,
+    detail,
+    tone,
+    emailSnippet,
+  });
+  const created = event(0, IconPackage, `Rule executed: generated ${order.po}`, `Inventory threshold matched. Routed ${order.itemCount} ${order.itemCount === 1 ? 'item' : 'items'} to ${order.supplier} using supplier priority rules.`);
+
+  if (order.status === 'completed') {
+    return [
+      created,
+      event(18, IconMail, 'System parsed email (Keyword Match)', `Matched “confirmed” in the reply from ${order.supplier}. Quantity confirmation recorded.`, 'primary', {
+        sender: supplierEmail,
+        before: 'We have reviewed the purchase order and ',
+        keyword: 'confirmed',
+        after: ' all requested quantities for dispatch.',
+      }),
+      event(44, IconTruck, 'Receiving record matched', `${order.itemCount} ${order.itemCount === 1 ? 'item matched' : 'items matched'} the purchase order quantity.`, 'success'),
+      event(46, IconCheck, 'Completion rule executed', 'Usable inventory updated. Vendor invoice linked. Order status set to Completed.', 'success'),
+    ];
+  }
+
+  const exceptionEvents = [
+    created,
+    event(22, IconMail, 'System parsed email (Keyword Match)', `Rule matched keyword: “out of stock” in the reply from ${order.supplier}.`, 'alert', {
+        sender: supplierEmail,
+        before: 'The requested item is currently ',
+        keyword: 'out of stock',
+        after: ' until next month.',
+    }),
+    event(38, IconMail, 'Backup Supplier #1 response matched', 'Rule matched keyword: “unable to fulfill”. Triggered reroute to Backup Supplier #2.', 'alert', {
+        sender: 'orders@pattersondental.com',
+        before: 'We are ',
+        keyword: 'unable to fulfill',
+        after: ' the requested quantity.',
+    }),
+    event(54, IconMail, 'Backup Supplier #2 response matched', 'Rule matched keyword: “discontinued”. No additional supplier route exists.', 'alert', {
+        sender: 'orders@scheindental.com',
+        before: 'This item has been ',
+        keyword: 'discontinued',
+        after: ' in your region.',
+    }),
+    event(61, IconAlert, 'Exception rule triggered', 'No configured supplier route remains. Order status set to Intervention required.', 'alert'),
+  ];
+
+  if (order.status === 'action') {
+    return exceptionEvents;
+  }
+
+  if (order.statusLabel === 'Procurement paused') {
+    return [
+      ...exceptionEvents,
+      event(68, IconPause, 'Manual pause recorded', 'Procurement paused by a clinic user. No additional purchase orders will be generated.', 'warning'),
+    ];
+  }
+
+  if (order.statusLabel === 'Manual follow-up sent') {
+    return [
+      ...exceptionEvents,
+      event(68, IconMail, 'Manual email recorded', 'Outbound manual follow-up sent. Order status changed to Pending.', 'warning'),
+    ];
+  }
+
+  if (order.statusLabel === 'Queued for EOD') {
+    return [
+      ...exceptionEvents,
+      event(68, IconPlay, 'Automation resumed', 'Manual pause removed. Item queued for the next end-of-day procurement batch.', 'primary'),
+    ];
+  }
+
+  if (order.statusLabel === 'Awaiting response') {
+    return [
+      created,
+      event(1, IconSettings, 'Purchase order payload validated', 'Required supplier, item, quantity, and routing fields passed validation.'),
+      event(2, IconMail, 'Outbound email rule executed', `Purchase order delivered to ${order.supplier}. Response timer started.`),
+      event(32, IconClock, 'Response timer active', 'No inbound email match recorded. Follow-up rule remains scheduled.', 'warning'),
+    ];
+  }
+
+  if (order.statusLabel === 'Rerouting order') {
+    return [
+      created,
+      event(16, IconMail, 'System parsed email (Keyword Match)', `Rule matched keyword: “unavailable” in the reply from ${order.supplier}.`, 'warning', {
+        sender: supplierEmail,
+        before: 'We are ',
+        keyword: 'unavailable',
+        after: ' to fulfill the requested quantity.',
+      }),
+      event(18, IconExternalLink, 'Supplier routing rule executed', 'Triggered automated reroute to Backup Supplier #1. Linked purchase order created.', 'warning'),
+      event(20, IconClock, 'Response timer active', 'No inbound email match recorded for Backup Supplier #1.', 'warning'),
+    ];
+  }
+
+  return [
+    created,
+    event(21, IconMail, 'System parsed email (Keyword Match)', `Matched “confirmed” and delivery terms in the reply from ${order.supplier}.`, 'primary', {
+      sender: supplierEmail,
+      before: 'Your order is ',
+      keyword: 'confirmed',
+      after: ' and scheduled for delivery today.',
+    }),
+    event(24, IconSettings, 'Delivery fields recorded', 'Carrier and delivery window values were written to the order record.'),
+    event(36, IconTruck, 'Status rule executed: Being delivered', 'Shipment record active. Inventory update is blocked until a receiving record is submitted.', 'primary'),
+  ];
+}
+
+function TimelineDrawer({
+  order,
+  onClose,
+  onEditItem,
+  onPause,
+  onManualEmail,
+}: {
+  order: MonitorOrder;
+  onClose: () => void;
+  onEditItem?: (itemName: string) => void;
+  onPause?: (itemName: string) => void;
+  onManualEmail?: (orderId: string) => void;
+}) {
+  const events = getAuditEvents(order);
+  const [exported, setExported] = useState(false);
+  const [emailDrafted, setEmailDrafted] = useState(false);
+  const [selectedEmail, setSelectedEmail] = useState<{ snippet: EmailSnippet; date: string } | null>(null);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const requiresIntervention = order.status === 'action';
+  return (
+    <>
+      <Overlay onClose={onClose}>
+        <aside className="relative flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
+        <div className="flex items-start justify-between border-b border-clinical-200 px-7 py-6">
+          <div>
+            <p className="font-display text-lg font-semibold text-clinical-900">{order.po}</p>
+            <p className="mt-1 text-sm text-clinical-500">{order.supplier} · {order.route}</p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100"><IconX className="h-5 w-5" /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-7 py-7">
+          <p className="mb-7 text-xs font-semibold uppercase tracking-wider text-clinical-400">Order audit trail</p>
+          <div className="relative ml-3 border-l border-clinical-200 pl-8">
+            {events.map((event, index) => {
+              const EventIcon = event.icon;
+              const eventKey = `${event.time}-${event.title}`;
+              return (
+                <div key={eventKey} className={index < events.length - 1 ? 'pb-8' : 'pb-2'}>
+                  <span className={`absolute -left-4 flex h-8 w-8 items-center justify-center rounded-full border bg-white shadow-sm ${
+                    event.tone === 'success'
+                      ? 'border-success-100 text-success-700'
+                      : event.tone === 'alert'
+                        ? 'border-alert-100 text-alert-700'
+                        : event.tone === 'warning'
+                          ? 'border-warning-100 text-warning-700'
+                          : 'border-clinical-200 text-primary-700'
+                  }`}>
+                    <EventIcon className="h-4 w-4" />
+                  </span>
+                  <p className="text-xs font-medium text-clinical-400">{event.time}</p>
+                  <p className="mt-1.5 text-sm font-semibold text-clinical-900">{event.title}</p>
+                  {event.emailSnippet ? (
+                    <div className="mt-3 rounded-lg border border-clinical-200 bg-clinical-50 p-3.5">
+                      <p className="truncate text-xs text-clinical-400">{event.emailSnippet.sender}</p>
+                      <p className="mt-2 text-sm italic leading-relaxed text-clinical-600">
+                        “{event.emailSnippet.before}
+                        <span className="rounded bg-warning-100 px-1 py-0.5 font-semibold text-warning-700">{event.emailSnippet.keyword}</span>
+                        {event.emailSnippet.after}”
+                      </p>
+                      <div className="mt-2.5 text-right">
+                        <button
+                          onClick={() => setSelectedEmail({ snippet: event.emailSnippet!, date: event.time })}
+                          className="text-xs font-semibold text-primary-700 hover:text-primary-900"
+                        >
+                          View full email
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-1.5 text-sm leading-relaxed text-clinical-500">{event.detail}</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {requiresIntervention ? (
+          <div className="border-t border-clinical-200 bg-white px-7 py-5 shadow-lg">
+            <div className="flex items-start gap-2.5">
+              <IconAlert className="mt-0.5 h-4 w-4 shrink-0 text-alert-600" />
+              <div>
+                <p className="text-sm font-semibold text-clinical-900">Manual resolution required</p>
+                <p className="mt-1 text-xs text-clinical-500">The final exception rule requires a human action.</p>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-2.5">
+              <button onClick={() => onPause?.(order.itemName)} className="flex items-center justify-center gap-2 rounded-lg border border-warning-200 bg-white px-4 py-2.5 text-sm font-semibold text-warning-700 hover:bg-warning-50">
+                <IconPause className="h-4 w-4" />
+                Pause Procurement
+              </button>
+              <button onClick={() => onEditItem?.(order.itemName)} className="flex items-center justify-center gap-2 rounded-lg bg-primary-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary-800">
+                <IconSettings className="h-4 w-4" /> Edit Item Config
+              </button>
+              {emailDrafted ? (
+                <div className="flex items-center justify-center gap-2 rounded-lg border border-success-100 bg-success-50 px-4 py-2.5 text-sm font-semibold text-success-700">
+                  <IconCheck className="h-4 w-4" /> Manual email drafted
+                </div>
+              ) : (
+                <button onClick={() => setComposerOpen(true)} className="flex items-center justify-center gap-2 rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-100">
+                  <IconMail className="h-4 w-4" /> Draft Manual Email
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between border-t border-clinical-200 bg-white px-7 py-4">
+            <p className="text-xs text-clinical-400">{events.length} logged events</p>
+            <button onClick={() => setExported(true)} className="inline-flex items-center gap-2 rounded-lg border border-clinical-200 bg-white px-3.5 py-2 text-xs font-semibold text-clinical-700 hover:bg-clinical-50">
+              {exported ? <IconCheck className="h-4 w-4 text-success-600" /> : <IconDownload className="h-4 w-4" />}
+              {exported ? 'Log exported' : 'Export log'}
+            </button>
+          </div>
+        )}
+        </aside>
+      </Overlay>
+      {selectedEmail && (
+        <FullEmailModal
+          order={order}
+          snippet={selectedEmail.snippet}
+          date={selectedEmail.date}
+          onClose={() => setSelectedEmail(null)}
+        />
+      )}
+      {composerOpen && (
+        <EmailComposerModal
+          order={order}
+          onClose={() => setComposerOpen(false)}
+          onSend={() => {
+            setComposerOpen(false);
+            setEmailDrafted(true);
+            onManualEmail?.(order.id);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+interface InvoiceLine {
+  item: InventoryRow;
+  quantity: number;
+  unitPrice: number;
+}
+
+function getInvoiceLines(order: MonitorOrder): InvoiceLine[] {
+  const primaryIndex = ACTIVE_INVENTORY_ROWS.findIndex(item => item.name === order.itemName);
+  const startIndex = primaryIndex >= 0 ? primaryIndex : 0;
+  const lineCount = Math.min(3, Math.max(1, order.itemCount));
+  return Array.from({ length: lineCount }, (_, index) => {
+    const item = ACTIVE_INVENTORY_ROWS[(startIndex + index) % ACTIVE_INVENTORY_ROWS.length];
+    const quantity = Math.max(1, Math.min(4, order.itemCount - index));
+    const unitPrice = 320 + ((startIndex + index) % 5) * 145;
+    return { item, quantity, unitPrice };
+  });
+}
+
+function getInternalSku(item: InventoryRow) {
+  const presentationSkus: Record<string, string> = {
+    'Nitrile Examination Gloves': 'DEN-PPE-012',
+    'Cotton Rolls': 'DEN-DIS-044',
+    'Disposable Saliva Ejectors': 'DEN-DIS-089',
+  };
+  if (presentationSkus[item.name]) return presentationSkus[item.name];
+
+  const categoryCode = item.category.slice(0, 3).toUpperCase();
+  const itemNumber = item.id.replace(/\D/g, '').slice(-3).padStart(3, '0');
+  return `DEN-${categoryCode}-${itemNumber}`;
+}
+
+function InvoiceDrawer({ order, onClose }: { order: MonitorOrder; onClose: () => void }) {
+  const [downloaded, setDownloaded] = useState(false);
+  const lines = getInvoiceLines(order);
+  const invoiceTotal = lines.reduce((total, line) => total + line.quantity * line.unitPrice, 0);
+  const invoiceDate = order.timestamp.includes('Today') || order.timestamp.includes('Yesterday')
+    ? 'September 24, 2026'
+    : `${order.timestamp.split(',')[0]}, 2026`;
+
+  return (
+    <Overlay align="right" onClose={onClose}>
+      <aside className="relative flex h-full min-h-screen w-full max-w-2xl flex-col bg-white shadow-2xl">
+        <div className="flex items-center gap-4 border-b border-clinical-200 px-6 py-5">
+          <button onClick={onClose} aria-label="Close invoice" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
+            <IconX className="h-5 w-5" />
+          </button>
+          <div>
+            <p className="font-display text-lg font-semibold text-clinical-900">{order.po}</p>
+            <p className="mt-1 text-sm text-clinical-500">{order.supplier}</p>
+          </div>
+          <span className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-success-100 bg-success-50 px-2.5 py-1 text-xs font-semibold text-success-700">
+            <IconCheck className="h-3.5 w-3.5" /> Completed
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-7 py-7">
+          <section>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-clinical-400">Source document</p>
+            <div className="flex items-center gap-4 rounded-xl border border-clinical-200 bg-clinical-50/60 p-5">
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-clinical-200 bg-white text-alert-600 shadow-sm">
+                <IconFileText className="h-6 w-6" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-clinical-900">Vendor Invoice Attached</p>
+                <p className="mt-1 text-xs text-clinical-500">Automated OCR rule matched a PDF attachment on {invoiceDate}.</p>
+              </div>
+              <button onClick={() => setDownloaded(true)} className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-primary-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-primary-700 shadow-sm hover:bg-primary-50">
+                {downloaded ? <IconCheck className="h-4 w-4 text-success-600" /> : <IconDownload className="h-4 w-4" />}
+                {downloaded ? 'PDF Downloaded' : 'Download Original PDF'}
+              </button>
+            </div>
+          </section>
+
+          <section className="mt-8">
+            <div className="mb-3 flex items-end justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wider text-clinical-400">Reconciliation summary</p>
+              <p className="text-xs text-clinical-400">Invoice matched to goods received</p>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-clinical-200">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-clinical-200 bg-clinical-50 text-[10px] font-semibold uppercase tracking-wider text-clinical-500">
+                    <th className="px-4 py-3">Item Name</th>
+                    <th className="px-3 py-3 text-center">Qty Ordered</th>
+                    <th className="px-3 py-3 text-center">Qty Received</th>
+                    <th className="px-3 py-3 text-right">Unit Price</th>
+                    <th className="px-4 py-3 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-clinical-100">
+                  {lines.map(line => (
+                    <tr key={line.item.id}>
+                      <td className="px-4 py-4">
+                        <p className="font-semibold text-clinical-900">{line.item.name}</p>
+                        <p className="mt-1 flex items-center gap-1 text-xs text-clinical-400">
+                          <IconLock className="h-3 w-3" /> Internal SKU {getInternalSku(line.item)}
+                        </p>
+                      </td>
+                      <td className="px-3 py-4 text-center font-medium text-clinical-700">{line.quantity}</td>
+                      <td className="px-3 py-4 text-center">
+                        <span className="inline-flex items-center gap-1 font-semibold text-success-700">
+                          <IconCheck className="h-3.5 w-3.5" /> {line.quantity}
+                        </span>
+                      </td>
+                      <td className="px-3 py-4 text-right text-clinical-600">₱{line.unitPrice.toLocaleString()}</td>
+                      <td className="px-4 py-4 text-right font-semibold text-clinical-900">₱{(line.quantity * line.unitPrice).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-clinical-200 bg-success-50/50">
+                    <td colSpan={4} className="px-4 py-4 text-right text-sm font-semibold text-clinical-700">Total Invoice Amount</td>
+                    <td className="px-4 py-4 text-right text-base font-bold text-success-700">₱{invoiceTotal.toLocaleString()}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <div className="mt-3 flex items-center gap-2 text-xs text-success-700">
+              <IconCheck className="h-4 w-4" />
+              <span className="font-semibold">Reconciled successfully</span>
+              <span className="text-clinical-400">All invoice quantities match received stock.</span>
+            </div>
+          </section>
+        </div>
+
+        <div className="sticky bottom-0 border-t border-clinical-200 bg-white px-7 py-5 shadow-lg">
+          <div className="flex items-center justify-between gap-5">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-clinical-400">Accounting status</p>
+              <span className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-warning-100 bg-warning-50 px-2.5 py-1 text-xs font-semibold text-warning-700">
+                <IconClock className="h-3.5 w-3.5" /> Payment Pending
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={() => window.print()} className="inline-flex items-center gap-2 px-2 py-2 text-sm font-semibold text-clinical-600 hover:text-clinical-900">
+                <IconPrinter className="h-4 w-4" /> Print Record
+              </button>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </Overlay>
+  );
+}
+
+interface DeliveryFields {
+  qty: string;
+  lot: string;
+  expiration: string;
+}
+
+function ReceiveModal({ order, items, onClose, onConfirmed }: { order: MonitorOrder; items: InventoryRow[]; onClose: () => void; onConfirmed: (items: string[]) => void }) {
+  const [fields, setFields] = useState<Record<string, DeliveryFields>>(() => Object.fromEntries(items.map(item => [
+    item.id,
+    {
+      qty: String(Math.max(1, Math.min(4, item.max - item.quantity))),
+      lot: '',
+      expiration: '',
+    },
+  ])));
+  const valid = items.every(item => {
+    const itemFields = fields[item.id];
+    const perishable = item.expiry !== 'none';
+    return Number(itemFields?.qty) > 0
+      && (!perishable || (itemFields.lot.trim() !== '' && itemFields.expiration !== ''));
+  });
+  const inputClass = 'mt-1.5 w-full rounded-lg border border-clinical-200 bg-white px-3 py-2.5 text-sm text-clinical-800 outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-100';
+  const updateField = (itemId: string, field: keyof DeliveryFields, value: string) => {
+    setFields(current => ({
+      ...current,
+      [itemId]: { ...current[itemId], [field]: value },
+    }));
+  };
+
+  return (
+    <Overlay align="center" onClose={onClose}>
+      <section className="relative flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-clinical-200 px-7 py-5">
+          <div>
+            <p className="font-display text-lg font-semibold text-clinical-900">{order.supplier}</p>
+            <p className="mt-0.5 text-xs text-clinical-500">{order.po} · Mixed delivery</p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100"><IconX className="h-5 w-5" /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-7 py-6">
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-primary-100 bg-primary-50 p-4">
+            <div className="flex items-center gap-3">
+              <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-primary-700 shadow-sm"><IconScan className="h-5 w-5" /></span>
+              <div>
+                <p className="text-sm font-semibold text-primary-900">Quick receive</p>
+                <p className="mt-0.5 text-xs text-primary-700">Scan a case or item label to fill delivery details.</p>
+              </div>
+            </div>
+            <button className="flex items-center gap-2 whitespace-nowrap rounded-lg bg-primary-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary-800">
+              <IconScan className="h-4 w-4" /> Scan GS1 Barcode
+            </button>
+          </div>
+          <div className="mt-6 space-y-3">
+            {items.map(item => {
+              const perishable = item.expiry !== 'none';
+              const itemFields = fields[item.id];
+              return (
+                <div key={item.id} className="rounded-xl border border-clinical-200 p-5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-clinical-900">{item.name}</p>
+                      <p className="mt-1 text-xs text-clinical-500">
+                        {item.category} · {perishable ? 'expiration tracking required' : 'non-perishable'}
+                      </p>
+                    </div>
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${perishable ? 'bg-warning-50 text-warning-700' : 'bg-clinical-100 text-clinical-600'}`}>
+                      {itemFields.qty} {item.unit} expected
+                    </span>
+                  </div>
+                  <div className={`mt-4 grid gap-4 ${perishable ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                    <label className="text-xs font-semibold text-clinical-600">
+                      Qty Received
+                      <input type="number" min="0" value={itemFields.qty} onChange={event => updateField(item.id, 'qty', event.target.value)} className={inputClass} />
+                    </label>
+                    <label className="text-xs font-semibold text-clinical-600">
+                      Batch / Lot ID {perishable ? <span className="text-alert-600">*</span> : <span className="font-normal text-clinical-400">Optional</span>}
+                      <input value={itemFields.lot} onChange={event => updateField(item.id, 'lot', event.target.value)} placeholder={perishable ? 'Required' : 'Optional'} className={inputClass} />
+                    </label>
+                    {perishable && (
+                      <label className="text-xs font-semibold text-clinical-600">
+                        Expiration Date <span className="text-alert-600">*</span>
+                        <input type="date" value={itemFields.expiration} onChange={event => updateField(item.id, 'expiration', event.target.value)} className={inputClass} />
+                      </label>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex items-center justify-between border-t border-clinical-200 bg-clinical-50 px-7 py-5">
+          <p className="text-xs text-clinical-500">{valid ? `Ready to update ${items.length} inventory items.` : 'Complete required fields to continue.'}</p>
+          <button onClick={() => valid && onConfirmed(items.map(item => item.name))} disabled={!valid} className="flex items-center gap-2 rounded-lg bg-success-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-success-700 disabled:cursor-not-allowed disabled:bg-clinical-200 disabled:text-clinical-400">
+            <IconCheck className="h-4 w-4" /> Confirm & Update Stock
+          </button>
+        </div>
+      </section>
+    </Overlay>
+  );
+}
+
+type FilterTab = 'action' | 'all' | 'pending' | 'completed';
+
+interface OrderMonitoringProps {
+  pausedItemNames?: string[];
+  resumedItemNames?: string[];
+  onEditInventoryItem?: (itemName: string) => void;
+  onPauseProcurement?: (itemName: string) => void;
+  onStockReceived?: (itemNames: string[]) => void;
+}
+
+export default function OrderMonitoring({
+  pausedItemNames = [],
+  resumedItemNames = [],
+  onEditInventoryItem,
+  onPauseProcurement,
+  onStockReceived,
+}: OrderMonitoringProps) {
+  const [filter, setFilter] = useState<FilterTab>('all');
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [drawer, setDrawer] = useState<DrawerView>(null);
+  const [selected, setSelected] = useState<MonitorOrder>(ORDERS[0]);
+  const [receiveOrder, setReceiveOrder] = useState<MonitorOrder | null>(null);
+  const [invoiceOrder, setInvoiceOrder] = useState<MonitorOrder | null>(null);
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const [receivedIds, setReceivedIds] = useState<string[]>([]);
+  const [resolvedOrders, setResolvedOrders] = useState<Record<string, 'paused' | 'email'>>({});
+  const [toast, setToast] = useState<string | null>(null);
+  const pageSize = 5;
+
+  const liveOrders = ORDERS.map(order => {
+    if (receivedIds.includes(order.id)) {
+      return { ...order, status: 'completed' as const, statusLabel: 'Completed', summary: 'Stock ledger updated', automation: 'Receipt matched · reconciliation complete', action: undefined };
+    }
+    const resolution = resolvedOrders[order.id]
+      ?? (pausedItemNames.includes(order.itemName) ? 'paused' : undefined);
+    if (resolution) {
+      return {
+        ...order,
+        status: 'pending' as const,
+        statusLabel: resolution === 'paused' ? 'Procurement paused' : 'Manual follow-up sent',
+        automation: resolution === 'paused' ? 'Manual pause recorded' : 'Manual email recorded · response pending',
+        action: 'timeline' as const,
+      };
+    }
+    if (resumedItemNames.includes(order.itemName) && order.status === 'action') {
+      return {
+        ...order,
+        status: 'pending' as const,
+        statusLabel: 'Queued for EOD',
+        automation: 'Resume rule recorded · queued for next EOD batch',
+        action: 'timeline' as const,
+      };
+    }
+    return order;
+  });
+  const filtered = useMemo(() => liveOrders.filter(order => {
+    const matchesTab = filter === 'all' || order.status === filter;
+    const inventoryItem = INVENTORY_BY_NAME.get(order.itemName);
+    const searchable = `${order.po} ${order.supplier} ${order.itemName} ${inventoryItem?.id ?? ''} ${inventoryItem?.category ?? ''} ${order.statusLabel} ${order.summary}`.toLowerCase();
+    return matchesTab && searchable.includes(query.toLowerCase());
+  }), [filter, pausedItemNames, query, receivedIds, resolvedOrders, resumedItemNames]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const visible = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+  useEffect(() => setPage(1), [filter, query]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timeout = window.setTimeout(() => setToast(null), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  useEffect(() => {
+    if (!menuId) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('[data-order-menu]')) {
+        setMenuId(null);
+      }
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [menuId]);
+
+  const openAction = (order: MonitorOrder) => {
+    setSelected(order);
+    if (order.action === 'resolve') setDrawer('timeline');
+    if (order.action === 'timeline') setDrawer('timeline');
+    if (order.action === 'receive') setReceiveOrder(order);
+  };
+
+  const tabs: { id: FilterTab; label: string; count: number }[] = [
+    { id: 'action', label: 'Action Required', count: liveOrders.filter(order => order.status === 'action').length },
+    { id: 'all', label: 'All', count: liveOrders.length },
+    { id: 'pending', label: 'Pending', count: liveOrders.filter(order => order.status === 'pending').length },
+    { id: 'completed', label: 'Completed', count: liveOrders.filter(order => order.status === 'completed').length },
+  ];
+
+  return (
+    <div>
+      <div className="mb-5 flex items-center gap-3">
+        <div className="relative max-w-2xl flex-1">
+          <IconSearch className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-clinical-400" />
+          <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search PO, supplier, item, status..." className="w-full rounded-full border border-clinical-200 bg-white py-3 pl-12 pr-4 text-sm text-clinical-800 shadow-sm outline-none transition placeholder:text-clinical-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-100" />
+        </div>
+      </div>
+
+      <div className="mb-4 flex items-center gap-1 border-b border-clinical-200">
+        {tabs.map(tab => {
+          const active = filter === tab.id;
+          const action = tab.id === 'action';
+          return (
+            <button key={tab.id} onClick={() => setFilter(tab.id)} className={`relative px-4 py-3 text-xs font-semibold transition ${active ? action ? 'text-alert-700' : 'text-primary-800' : action ? 'text-alert-600 hover:bg-alert-50' : 'text-clinical-500 hover:text-clinical-800'}`}>
+              {tab.label} ({tab.count})
+              {active && <span className={`absolute inset-x-2 bottom-0 h-0.5 ${action ? 'bg-alert-600' : 'bg-primary-700'}`} />}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="overflow-visible rounded-xl border border-clinical-200 bg-white shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1100px] table-auto text-left text-sm">
+            <thead>
+              <tr className="border-b border-clinical-200 bg-clinical-50/80 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
+                <th className="min-w-40 px-5 py-3.5">PO Details</th>
+                <th className="min-w-48 px-4 py-3.5">Supplier</th>
+                <th className="min-w-48 px-4 py-3.5">Order Status</th>
+                <th className="min-w-48 px-4 py-3.5">Items Summary</th>
+                <th className="min-w-72 px-4 py-3.5">System Action</th>
+                <th className="sticky right-0 w-12 bg-clinical-50 px-3 py-3.5"><span className="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-clinical-100">
+              {visible.map(order => (
+                <tr key={order.id} className="group transition hover:bg-clinical-50/60">
+                  <td className="px-4 py-5 align-top">
+                    <p className="text-sm font-semibold text-clinical-900">{order.po}</p>
+                    <p className="mt-1.5 text-xs italic text-clinical-400">{order.timestamp}</p>
+                  </td>
+                  <td className="px-5 py-5 align-top">
+                    <p className="text-sm font-semibold text-clinical-800">{order.supplier}</p>
+                    <p className="mt-1.5 text-xs text-clinical-400">{order.route}</p>
+                  </td>
+                  <td className="px-4 py-5 align-top"><StatusBadge order={order} /></td>
+                  <td className="px-4 py-5 align-top">
+                    <p className="text-sm font-semibold text-clinical-800">{order.itemCount} {order.itemCount === 1 ? 'item' : 'items'}</p>
+                    <p className="mt-1.5 text-xs text-clinical-500">{order.itemName}</p>
+                    {INVENTORY_BY_NAME.get(order.itemName) && (
+                      <p className="mt-1 text-xs text-clinical-400">
+                        {INVENTORY_BY_NAME.get(order.itemName)!.quantity} {INVENTORY_BY_NAME.get(order.itemName)!.unit} usable · {INVENTORY_BY_NAME.get(order.itemName)!.id}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-5 align-top">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-xs leading-relaxed text-clinical-500">{order.automation}</p>
+                        {order.action && (
+                          <button onClick={() => openAction(order)} className={`mt-2 inline-flex items-center gap-1.5 text-xs font-semibold ${order.action === 'resolve' ? 'text-alert-700 hover:text-alert-600' : 'text-primary-700 hover:text-primary-900'}`}>
+                            {order.action === 'resolve' && <IconAlert className="h-3.5 w-3.5" />}
+                            {order.action === 'timeline' && <IconClock className="h-3.5 w-3.5" />}
+                            {order.action === 'receive' && <IconPackage className="h-3.5 w-3.5" />}
+                            {order.action === 'resolve' ? 'Resolve dead end' : order.action === 'timeline' ? 'View order timeline' : 'Receive delivery'}
+                            <IconChevronRight className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className={`sticky right-0 bg-white px-3 py-5 align-top transition group-hover:bg-clinical-50 ${menuId === order.id ? 'z-40' : 'z-10'}`}>
+                    <div className="relative" data-order-menu>
+                      <button onClick={() => setMenuId(menuId === order.id ? null : order.id)} aria-label={`Actions for ${order.po}`} className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800"><IconMoreVertical className="h-5 w-5" /></button>
+                      {menuId === order.id && (
+                        <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
+                          {order.status === 'completed' && (
+                            <button onClick={() => { setInvoiceOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                              <IconFileText className="h-4 w-4 shrink-0 text-clinical-500" /> View invoice
+                            </button>
+                          )}
+                          <button onClick={() => { setSelected(order); setDrawer('timeline'); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                            <IconClock className="h-4 w-4 shrink-0 text-clinical-500" /> View audit trail
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {visible.length === 0 && (
+                <tr><td colSpan={6} className="px-6 py-16 text-center"><IconSearch className="mx-auto h-6 w-6 text-clinical-300" /><p className="mt-3 text-sm font-medium text-clinical-700">No matching orders</p><p className="mt-1 text-xs text-clinical-400">Try another search or status.</p></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex items-center justify-between border-t border-clinical-100 px-5 py-3 text-xs text-clinical-500">
+          <span>{filtered.length === 0 ? 0 : (page - 1) * pageSize + 1}-{Math.min(page * pageSize, filtered.length)} of {filtered.length} orders</span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setPage(value => Math.max(1, value - 1))} disabled={page === 1} aria-label="Previous page" className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"><IconChevronRight className="h-4 w-4 rotate-180" /></button>
+            <span>{page} of {totalPages}</span>
+            <button onClick={() => setPage(value => Math.min(totalPages, value + 1))} disabled={page === totalPages} aria-label="Next page" className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"><IconChevronRight className="h-4 w-4" /></button>
+          </div>
+        </div>
+      </div>
+
+      {drawer === 'timeline' && (
+        <TimelineDrawer
+          order={selected}
+          onClose={() => setDrawer(null)}
+          onEditItem={onEditInventoryItem}
+          onPause={itemName => {
+            onPauseProcurement?.(itemName);
+            setResolvedOrders(current => ({ ...current, [selected.id]: 'paused' }));
+            setDrawer(null);
+            setToast(`Procurement paused for ${itemName}`);
+          }}
+          onManualEmail={orderId => {
+            setResolvedOrders(current => ({ ...current, [orderId]: 'email' }));
+            setToast(`Manual email drafted for ${selected.itemName}`);
+          }}
+        />
+      )}
+      {invoiceOrder && <InvoiceDrawer order={invoiceOrder} onClose={() => setInvoiceOrder(null)} />}
+      {receiveOrder && (
+        <ReceiveModal
+          order={receiveOrder}
+          items={getDeliveryItems(receiveOrder)}
+          onClose={() => setReceiveOrder(null)}
+          onConfirmed={items => {
+            setReceivedIds(ids => [...ids, receiveOrder.id]);
+            onStockReceived?.(items);
+            setReceiveOrder(null);
+          }}
+        />
+      )}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-xl border border-success-100 bg-white px-4 py-3 text-sm font-medium text-clinical-800 shadow-xl">
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-success-50 text-success-700">
+            <IconCheck className="h-4 w-4" />
+          </span>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}

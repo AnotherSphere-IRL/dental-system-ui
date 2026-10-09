@@ -1,0 +1,1241 @@
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  IconCheck,
+  IconChevronRight,
+  IconClock,
+  IconExternalLink,
+  IconLock,
+  IconPackage,
+  IconPlay,
+  IconPlus,
+  IconSearch,
+  IconSettings,
+  IconX,
+} from '../icons';
+import { useClinic } from '../../context/ClinicContext';
+
+type StockState = 'critical' | 'low' | 'normal' | 'overstock';
+type ExpiryState = 'expired' | 'expiring' | 'fresh' | 'none';
+type Filter = 'expired' | 'all' | 'low' | 'expiring';
+
+export interface InventoryRow {
+  id: string;
+  name: string;
+  category: string;
+  quantity: number;
+  max: number;
+  unit: string;
+  stock: StockState;
+  expiry: ExpiryState;
+  expiryTitle: string;
+  expiryDetail: string;
+  humanAction?: string;
+  systemAction: string;
+  systemKind: 'queued' | 'sent' | 'paused' | 'monitoring';
+}
+
+const INVENTORY_ROWS: InventoryRow[] = [
+  {
+    id: 'INV-1048',
+    name: 'Topical Anesthetic Gel',
+    category: 'Anesthetics',
+    quantity: 15,
+    max: 50,
+    unit: 'jars',
+    stock: 'normal',
+    expiry: 'expired',
+    expiryTitle: '3 expired',
+    expiryDetail: 'Batch BT-24018',
+    humanAction: 'Awaiting physical disposal',
+    systemAction: 'Replacement PO sent',
+    systemKind: 'sent',
+  },
+  {
+    id: 'INV-1021',
+    name: 'Composite Resin A2',
+    category: 'Restorative',
+    quantity: 3,
+    max: 20,
+    unit: 'syringes',
+    stock: 'low',
+    expiry: 'expiring',
+    expiryTitle: '3 expiring',
+    expiryDetail: '25 days left · B2026-01A',
+    systemAction: 'Queued for EOD',
+    systemKind: 'queued',
+  },
+  {
+    id: 'INV-1013',
+    name: 'Bonding Agent',
+    category: 'Restorative',
+    quantity: 0,
+    max: 8,
+    unit: 'bottles',
+    stock: 'critical',
+    expiry: 'none',
+    expiryTitle: 'Non-perishable',
+    expiryDetail: 'No batch tracking',
+    systemAction: 'PO sent · GC Dental',
+    systemKind: 'sent',
+  },
+  {
+    id: 'INV-1056',
+    name: 'Anesthetic Carpule 2%',
+    category: 'Anesthetics',
+    quantity: 24,
+    max: 100,
+    unit: 'carpules',
+    stock: 'normal',
+    expiry: 'expiring',
+    expiryTitle: '10 expiring',
+    expiryDetail: '45 days left · B2026-04A',
+    systemAction: 'Monitoring consumption',
+    systemKind: 'monitoring',
+  },
+  {
+    id: 'INV-1074',
+    name: 'Dental Cement',
+    category: 'Restorative',
+    quantity: 2,
+    max: 12,
+    unit: 'packs',
+    stock: 'critical',
+    expiry: 'fresh',
+    expiryTitle: 'All fresh',
+    expiryDetail: 'Batch B2026-05A',
+    systemAction: 'PO sent · DentaCore',
+    systemKind: 'sent',
+  },
+  {
+    id: 'INV-1082',
+    name: 'Rubber Dam',
+    category: 'Isolation',
+    quantity: 1,
+    max: 10,
+    unit: 'packs',
+    stock: 'critical',
+    expiry: 'fresh',
+    expiryTitle: 'All fresh',
+    expiryDetail: 'Batch B2026-06A',
+    systemAction: 'Queued for EOD',
+    systemKind: 'queued',
+  },
+  {
+    id: 'INV-1093',
+    name: 'Nitrile Examination Gloves',
+    category: 'Consumables',
+    quantity: 340,
+    max: 300,
+    unit: 'pairs',
+    stock: 'overstock',
+    expiry: 'none',
+    expiryTitle: 'Non-perishable',
+    expiryDetail: 'No batch tracking',
+    systemAction: 'Procurement manually paused',
+    systemKind: 'paused',
+  },
+  {
+    id: 'INV-1107',
+    name: 'Cotton Rolls',
+    category: 'Consumables',
+    quantity: 45,
+    max: 150,
+    unit: 'rolls',
+    stock: 'normal',
+    expiry: 'fresh',
+    expiryTitle: 'All fresh',
+    expiryDetail: 'Batch B2026-09A',
+    systemAction: 'Monitoring consumption',
+    systemKind: 'monitoring',
+  },
+];
+
+const ADDITIONAL_ITEM_NAMES = [
+  'Disposable Saliva Ejectors',
+  'Dental Bibs',
+  'Prophy Paste',
+  'Etching Gel',
+  'Articulating Paper',
+  'Impression Material',
+  'Sterilization Pouches',
+  'Micro Applicators',
+  'Fluoride Varnish',
+  'Surgical Masks',
+  'Needle Tips',
+  'Temporary Filling Material',
+  'Polishing Discs',
+  'Root Canal Files',
+  'Disinfectant Wipes',
+  'Suction Tips',
+];
+
+export const ACTIVE_INVENTORY_ROWS: InventoryRow[] = [
+  ...INVENTORY_ROWS,
+  ...ADDITIONAL_ITEM_NAMES.map((name, index) => {
+    const template = INVENTORY_ROWS[index % INVENTORY_ROWS.length];
+    return {
+      ...template,
+      id: `INV-${1201 + index}`,
+      name,
+      expiryDetail: template.expiry === 'none' ? 'No batch tracking' : `Batch B2026-${String(index + 11).padStart(2, '0')}A`,
+      humanAction: undefined,
+    };
+  }),
+];
+
+function IconTrash({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconMore({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="currentColor" viewBox="0 0 24 24">
+      <circle cx="12" cy="5" r="1.75" />
+      <circle cx="12" cy="12" r="1.75" />
+      <circle cx="12" cy="19" r="1.75" />
+    </svg>
+  );
+}
+
+function IconPause({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  );
+}
+
+function IconInfinity({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path d="M18.5 8.5c-3.5 0-5.4 7-9 7a3.5 3.5 0 1 1 0-7c3.6 0 5.5 7 9 7a3.5 3.5 0 1 0 0-7Z" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconTruck({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="M3 5h11v12H3zM14 9h4l3 4v4h-7z" strokeLinejoin="round" />
+      <circle cx="7" cy="18" r="2" />
+      <circle cx="18" cy="18" r="2" />
+    </svg>
+  );
+}
+
+function IconRestore({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 3v5h5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconArchive({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="M4 7h16v13H4zM3 3h18v4H3zM9 12h6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconPencil({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m14 7 3 3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function StatusBadge({ status }: { status: StockState }) {
+  const styles: Record<StockState, string> = {
+    critical: 'bg-alert-50 text-alert-700 border-alert-100',
+    low: 'bg-warning-50 text-warning-700 border-warning-100',
+    normal: 'bg-success-50 text-success-700 border-success-100',
+    overstock: 'bg-blue-50 text-blue-700 border-blue-100',
+  };
+  const labels: Record<StockState, string> = {
+    critical: 'Critical low',
+    low: 'Low',
+    normal: 'Normal',
+    overstock: 'Overstock',
+  };
+
+  return (
+    <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${styles[status]}`}>
+      {labels[status]}
+    </span>
+  );
+}
+
+function ExpiryCell({ item }: { item: InventoryRow }) {
+  if (item.expiry === 'expired') {
+    return (
+      <div>
+        <div className="flex items-center gap-1.5 font-semibold text-alert-700">
+          <span className="flex h-4 w-4 items-center justify-center rounded-full bg-alert-100 text-[10px]">!</span>
+          {item.expiryTitle}
+        </div>
+        <p className="mt-1 text-xs text-alert-600">{item.expiryDetail}</p>
+      </div>
+    );
+  }
+  if (item.expiry === 'expiring') {
+    return (
+      <div>
+        <div className="flex items-center gap-1.5 font-semibold text-warning-700">
+          <IconClock className="h-4 w-4" />
+          {item.expiryTitle}
+        </div>
+        <p className="mt-1 text-xs text-warning-700">{item.expiryDetail}</p>
+      </div>
+    );
+  }
+  if (item.expiry === 'none') {
+    return (
+      <div>
+        <div className="flex items-center gap-1.5 font-medium text-clinical-700">
+          <IconInfinity className="h-4 w-4" />
+          {item.expiryTitle}
+        </div>
+        <p className="mt-1 text-xs text-clinical-400">{item.expiryDetail}</p>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 font-semibold text-success-700">
+        <IconCheck className="h-4 w-4" />
+        {item.expiryTitle}
+      </div>
+      <p className="mt-1 text-xs text-clinical-400">{item.expiryDetail}</p>
+    </div>
+  );
+}
+
+function SystemAction({ item, onManage, onResume }: { item: InventoryRow; onManage: () => void; onResume: () => void }) {
+  if (item.systemKind === 'paused') {
+    return (
+      <div className="min-w-48">
+        <button onClick={onResume} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold text-primary-700 hover:bg-primary-50 hover:text-primary-900">
+          <IconPlay className="h-4 w-4" /> Resume Automation
+        </button>
+        <p className="ml-2 mt-1 text-xs text-clinical-400">Queues for the next EOD batch</p>
+      </div>
+    );
+  }
+
+  const SystemIcon = item.systemKind === 'sent'
+    ? IconTruck
+    : item.systemKind === 'monitoring'
+        ? IconPackage
+        : IconClock;
+
+  return (
+    <div className="min-w-48 text-xs">
+      {item.humanAction && (
+        <>
+          <div className="flex items-start gap-2 text-alert-700">
+            <IconTrash className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">{item.humanAction}</p>
+              <button onClick={onManage} className="mt-1 inline-flex items-center gap-1 font-semibold text-primary-700 hover:text-primary-900">
+                Manage 3 batches <IconExternalLink className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+          <div className="my-2 border-t border-clinical-100" />
+        </>
+      )}
+      <div className="flex items-center gap-2 text-clinical-600">
+        <SystemIcon className="h-4 w-4 shrink-0" />
+        <span>{item.systemAction}</span>
+      </div>
+    </div>
+  );
+}
+
+function DrawerShell({ children, onClose, width = 'max-w-xl' }: { children: ReactNode; onClose: () => void; width?: string }) {
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button aria-label="Close drawer" onClick={onClose} className="absolute inset-0 bg-clinical-900/30" />
+      <section className={`relative flex h-full w-full ${width} flex-col bg-white shadow-2xl`}>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-semibold text-clinical-700">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+const inputClass = 'w-full rounded-lg border border-clinical-200 bg-white px-3 py-2.5 text-sm text-clinical-800 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100';
+
+function ItemDetails({ item, internalSku }: { item: InventoryRow; internalSku: string }) {
+  const { deductionLog } = useClinic();
+  const [historyRange, setHistoryRange] = useState<7 | 30 | 90>(30);
+  const usageEntries = useMemo(() => {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - historyRange);
+    return deductionLog
+      .filter(entry => entry.itemName === item.name && new Date(entry.date) >= cutoff)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [deductionLog, historyRange, item.name]);
+  const bucketCount = historyRange === 7 ? 7 : 10;
+  const bucketSize = Math.ceil(historyRange / bucketCount);
+  const usageBuckets = Array.from({ length: bucketCount }, () => 0);
+  const now = new Date();
+  usageEntries.forEach(entry => {
+    const ageInDays = Math.floor((now.getTime() - new Date(entry.date).getTime()) / 86400000);
+    if (ageInDays < 0 || ageInDays >= historyRange) return;
+    const bucketIndex = bucketCount - 1 - Math.floor(ageInDays / bucketSize);
+    usageBuckets[Math.max(0, bucketIndex)] += entry.qty;
+  });
+  const totalUsed = usageEntries.reduce((total, entry) => total + entry.qty, 0);
+  const maxUsage = Math.max(...usageBuckets, 1);
+  const barHeight = (value: number) => {
+    const ratio = value / maxUsage;
+    if (value === 0) return 'h-1';
+    if (ratio <= 0.2) return 'h-6';
+    if (ratio <= 0.4) return 'h-10';
+    if (ratio <= 0.6) return 'h-16';
+    if (ratio <= 0.8) return 'h-22';
+    return 'h-28';
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-6">
+      <section className="border-b border-clinical-200 pb-7">
+        <p className="mb-5 font-semibold text-clinical-900">Identity & routing</p>
+        <dl className="grid grid-cols-2 gap-x-8 gap-y-5">
+          <div>
+            <dt className="text-xs font-medium text-clinical-400">Internal SKU</dt>
+            <dd className="mt-1 flex items-center gap-1.5 font-mono text-sm font-medium text-clinical-700">
+              {internalSku} <IconLock className="h-3.5 w-3.5 text-clinical-400" />
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs font-medium text-clinical-400">Category</dt>
+            <dd className="mt-1 text-sm font-medium text-clinical-700">{item.category}</dd>
+          </div>
+          <div className="col-span-2">
+            <dt className="text-xs font-medium text-clinical-400">Primary Supplier</dt>
+            <dd className="mt-1 text-sm font-medium text-clinical-700">GC Dental Supply Co.</dd>
+            <dd className="mt-1 font-mono text-xs text-clinical-400">#GC-{item.name.toUpperCase().split(' ').slice(0, 2).join('-')}</dd>
+          </div>
+          <div className="col-span-2">
+            <dt className="text-xs font-medium text-clinical-400">Backup Supplier</dt>
+            <dd className="mt-1 text-sm font-medium text-clinical-700">DentaCore Backup PH</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="border-b border-clinical-200 py-7">
+        <p className="mb-5 font-semibold text-clinical-900">Rule-based reorder thresholds</p>
+        <dl className="grid grid-cols-3 gap-4">
+          {[
+            { label: 'Maximum', value: item.max },
+            { label: 'Low trigger', value: 20 },
+            { label: 'Critical trigger', value: 10 },
+          ].map(metric => (
+            <div key={metric.label} className="rounded-xl bg-clinical-50 p-4">
+              <dt className="text-xs text-clinical-400">{metric.label}</dt>
+              <dd className="mt-1 text-lg font-bold text-clinical-800">{metric.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <section className="pt-7">
+        <div className="flex items-end justify-between">
+          <div>
+            <p className="font-semibold text-clinical-900">Consumption & Audit History</p>
+            <p className="mt-1 text-xs text-clinical-400">Recorded procedure deductions</p>
+          </div>
+          <div className="text-right">
+            <p className="text-lg font-bold text-clinical-900">{totalUsed}</p>
+            <p className="text-xs text-clinical-400">{item.unit} used</p>
+          </div>
+        </div>
+        <div className="mt-5 inline-flex rounded-lg border border-clinical-200 bg-white p-0.5">
+          {([7, 30, 90] as const).map(range => (
+            <button
+              key={range}
+              type="button"
+              onClick={() => setHistoryRange(range)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                historyRange === range
+                  ? 'bg-clinical-800 text-white'
+                  : 'text-clinical-500 hover:bg-clinical-50 hover:text-clinical-800'
+              }`}
+            >
+              {range} days
+            </button>
+          ))}
+        </div>
+        <div className="mt-6 flex h-36 items-end gap-2 rounded-xl border border-clinical-200 bg-clinical-50 px-4 pb-4 pt-6" aria-label={`${historyRange}-day item consumption bar chart`}>
+          {usageBuckets.map((value, index) => (
+            <div key={index} className="flex h-full flex-1 items-end">
+              <span
+                title={`${value} ${item.unit} used`}
+                className={`w-full rounded-t ${value > 0 ? 'bg-primary-500/70' : 'bg-clinical-200'} ${barHeight(value)}`}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 flex justify-between text-[10px] text-clinical-400">
+          <span>{historyRange} days ago</span>
+          <span>Today</span>
+        </div>
+        {usageEntries.length > 0 ? (
+          <div className="mt-5 divide-y divide-clinical-100 rounded-xl border border-clinical-200">
+            {usageEntries.slice(0, 6).map(entry => (
+              <div key={entry.id} className="flex items-start justify-between gap-4 px-4 py-3">
+                <div>
+                  <p className="text-xs font-medium text-clinical-700">{entry.procedure}</p>
+                  <p className="mt-1 text-[11px] text-clinical-400">{entry.performedBy} · Patient {entry.patientId}</p>
+                </div>
+                <div className="shrink-0 text-right">
+                  <p className="text-xs font-semibold text-clinical-700">-{entry.qty} {item.unit}</p>
+                  <p className="mt-1 text-[11px] text-clinical-400">
+                    {new Date(entry.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-5 rounded-xl border border-dashed border-clinical-200 px-4 py-8 text-center">
+            <IconClock className="mx-auto h-5 w-5 text-clinical-300" />
+            <p className="mt-2 text-xs font-medium text-clinical-600">No consumption recorded in this period</p>
+            <p className="mt-1 text-[11px] text-clinical-400">Procedure deductions will appear here automatically.</p>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ItemDrawer({ item, reinitialize = false, onClose, onResume }: { item?: InventoryRow; reinitialize?: boolean; onClose: () => void; onResume?: () => void }) {
+  const [nonPerishable, setNonPerishable] = useState(item?.expiry === 'none');
+  const [backups, setBackups] = useState(['DentaCore Backup PH']);
+  const [paused, setPaused] = useState(item?.systemKind === 'paused');
+  const [editing, setEditing] = useState(!item || reinitialize);
+  const internalSku = item
+    ? `DEN-${item.category.slice(0, 3).toUpperCase()}-${item.id.slice(-3)}`
+    : 'DEN-RES-042';
+  const catalogStem = item?.name === 'Topical Anesthetic Gel'
+    ? 'TOPICAL-01'
+    : item?.name.toUpperCase().split(' ').slice(0, 2).join('-');
+
+  useEffect(() => {
+    setEditing(!item || reinitialize);
+  }, [item?.id, reinitialize]);
+
+  const save = (event: FormEvent) => {
+    event.preventDefault();
+    if (item && !reinitialize) {
+      setEditing(false);
+      return;
+    }
+    onClose();
+  };
+
+  return (
+    <DrawerShell onClose={onClose}>
+      <form onSubmit={save} className="flex h-full flex-col">
+        <div className="flex items-center justify-between border-b border-clinical-200 px-6 py-4">
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100 hover:text-clinical-900">
+              <IconX className="h-5 w-5" />
+            </button>
+            <div>
+              <p className="font-display text-lg font-semibold text-clinical-900">
+                {!editing && item
+                  ? item.name
+                  : reinitialize
+                    ? 'Unarchive & Reinitialize'
+                    : item
+                      ? `Edit Config: ${item.name}`
+                      : 'Add item'}
+              </p>
+            </div>
+          </div>
+          {!editing && item ? (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="inline-flex items-center gap-2 rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50"
+            >
+              <IconPencil className="h-4 w-4" /> Edit Config
+            </button>
+          ) : (
+            <button type="submit" className="rounded-lg bg-primary-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-primary-800">
+              {reinitialize ? 'Reinitialize Item' : item ? 'Save Changes' : 'Save Item'}
+            </button>
+          )}
+        </div>
+
+        {!editing && item ? (
+          <ItemDetails item={item} internalSku={internalSku} />
+        ) : (
+        <div className="flex-1 overflow-y-auto px-6 py-6">
+          {paused && (
+            <div className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-warning-100 bg-warning-50 px-4 py-3.5">
+              <div className="flex items-center gap-2.5 text-warning-700">
+                <IconPause className="h-4 w-4 shrink-0" />
+                <p className="text-sm font-medium">Automated ordering is currently paused for this item.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPaused(false);
+                  onResume?.();
+                }}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary-700 px-3 py-2 text-xs font-semibold text-white hover:bg-primary-800"
+              >
+                <IconPlay className="h-3.5 w-3.5" /> Resume
+              </button>
+            </div>
+          )}
+          <section className="border-b border-clinical-200 pb-7">
+            <div className="mb-5">
+              <p className="font-semibold text-clinical-900">Identity & routing</p>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <Field label="Item Name">
+                  <input className={inputClass} defaultValue={item?.name} placeholder="e.g. Composite Resin A2" required />
+                </Field>
+              </div>
+              <Field label="Category">
+                <select className={inputClass} defaultValue={item?.category ?? 'Restorative'}>
+                  <option>Restorative</option>
+                  <option>Anesthetics</option>
+                  <option>Consumables</option>
+                  <option>Isolation</option>
+                </select>
+              </Field>
+              <Field label="Internal SKU">
+                <div className="relative">
+                  <input
+                    className="w-full cursor-not-allowed rounded-lg border border-clinical-200 bg-clinical-100 py-2.5 pl-3 pr-10 font-mono text-sm text-clinical-500"
+                    value={internalSku}
+                    disabled
+                    aria-describedby="internal-sku-description"
+                  />
+                  <IconLock className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-clinical-400" />
+                </div>
+              </Field>
+              <p id="internal-sku-description" className="col-span-2 -mt-2 text-xs text-clinical-400">
+                Permanent system identifier. It cannot be edited or deleted.
+              </p>
+              <div className="col-span-2">
+                <Field label="Primary Supplier">
+                  <select className={inputClass}>
+                    <option>GC Dental Supply Co.</option>
+                    <option>MedDent Philippines</option>
+                    <option>UniMed Supplies</option>
+                  </select>
+                </Field>
+                <label className="mt-2 block">
+                  <span className="mb-1 block text-[11px] font-medium text-clinical-500">Supplier Catalog Code</span>
+                  <input
+                    className={`${inputClass} py-2 font-mono text-xs`}
+                    defaultValue={catalogStem ? `#GC-${catalogStem}` : undefined}
+                    placeholder="e.g. #GC-TOPICAL-01"
+                  />
+                </label>
+              </div>
+              <div className="col-span-2">
+                <p className="mb-2 text-xs font-semibold text-clinical-700">Backup Suppliers</p>
+                <div className="space-y-2">
+                  {backups.map((supplier, index) => (
+                    <div key={`${supplier}-${index}`} className="flex items-start gap-2 rounded-xl border border-clinical-200 p-3">
+                      <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-clinical-100 text-xs font-semibold text-clinical-500">{index + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <select className={inputClass} defaultValue={supplier}>
+                          <option>DentaCore Backup PH</option>
+                          <option>ProDental Warehouse</option>
+                          <option>UniMed Supplies</option>
+                        </select>
+                        <label className="mt-2 block">
+                          <span className="mb-1 block text-[11px] font-medium text-clinical-500">Supplier Catalog Code</span>
+                          <input
+                            className={`${inputClass} py-2 font-mono text-xs`}
+                            defaultValue={index === 0 && catalogStem ? `DC-${catalogStem}` : ''}
+                            placeholder="e.g. DC-TOPICAL-01"
+                          />
+                        </label>
+                      </div>
+                      <button type="button" onClick={() => setBackups(current => current.filter((_, i) => i !== index))} aria-label="Remove backup supplier" className="mt-1 rounded-lg p-2.5 text-clinical-400 hover:bg-alert-50 hover:text-alert-700">
+                        <IconX className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setBackups(current => [...current, 'ProDental Warehouse'])} className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-primary-700 hover:text-primary-900">
+                  <IconPlus className="h-4 w-4" /> Add another backup
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className={`${item && !reinitialize ? '' : 'border-b border-clinical-200'} py-7`}>
+            <div className="mb-5">
+              <p className="font-semibold text-clinical-900">Rule-based reorder thresholds</p>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Max · Overstock block">
+                <input type="number" className={inputClass} defaultValue={item?.max ?? 100} />
+              </Field>
+              <Field label="Low · EOD trigger">
+                <input type="number" className={inputClass} defaultValue={20} />
+              </Field>
+              <Field label="Critical · Immediate">
+                <input type="number" className={inputClass} defaultValue={10} />
+              </Field>
+            </div>
+          </section>
+
+          {(!item || reinitialize) && (
+            <section className="pt-7">
+              <div className="mb-5">
+                <p className="font-semibold text-clinical-900">Initial batch entry</p>
+                <p className="mt-0.5 text-xs text-clinical-400">Seed the opening physical stock used by inventory monitoring rules.</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={nonPerishable}
+                onClick={() => setNonPerishable(current => !current)}
+                className="mb-5 flex w-full items-center justify-between rounded-xl border border-clinical-200 bg-clinical-50 px-4 py-3 text-left"
+              >
+                <span>
+                  <span className="block text-sm font-semibold text-clinical-800">Non-perishable</span>
+                  <span className="block text-xs text-clinical-400">No expiration tracking required</span>
+                </span>
+                <span className={`relative h-6 w-11 rounded-full transition ${nonPerishable ? 'bg-primary-700' : 'bg-clinical-300'}`}>
+                  <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${nonPerishable ? 'left-6' : 'left-1'}`} />
+                </span>
+              </button>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Starting Quantity">
+                  <input type="number" className={inputClass} defaultValue={0} />
+                </Field>
+                <Field label="Batch ID">
+                  <input className={inputClass} placeholder="e.g. BT-24018" />
+                </Field>
+                <div className="col-span-2">
+                  <Field label="Expiration Date">
+                    <input type="date" disabled={nonPerishable} className={`${inputClass} disabled:cursor-not-allowed disabled:bg-clinical-100 disabled:text-clinical-400`} />
+                  </Field>
+                  {nonPerishable && <p className="mt-1.5 text-xs text-clinical-400">Disabled for non-perishable items.</p>}
+                </div>
+              </div>
+            </section>
+          )}
+        </div>
+        )}
+      </form>
+    </DrawerShell>
+  );
+}
+
+function BatchRow({ id, quantity, timing }: { id: string; quantity: string; timing: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-xl border border-clinical-200 bg-white px-4 py-3">
+      <div>
+        <p className="font-mono text-xs font-semibold text-clinical-800">{id}</p>
+        <p className="mt-1 text-xs text-clinical-400">{timing}</p>
+      </div>
+      <p className="text-sm font-bold text-clinical-900">{quantity}</p>
+    </div>
+  );
+}
+
+function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => void }) {
+  const [discarded, setDiscarded] = useState(false);
+  const [expiringRemoved, setExpiringRemoved] = useState(false);
+  const usable = discarded ? item.quantity : item.quantity;
+
+  return (
+    <DrawerShell onClose={onClose} width="max-w-lg">
+      <div className="flex items-start justify-between border-b border-clinical-200 px-6 py-5">
+        <div>
+          <p className="font-display text-lg font-semibold text-clinical-900">{item.name}</p>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-xs font-medium uppercase tracking-wide text-clinical-400">Usable stock</span>
+            <span className="text-xl font-bold text-clinical-900">{usable}</span>
+            <span className="text-xs text-clinical-400">{item.unit}</span>
+          </div>
+        </div>
+        <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
+          <IconX className="h-5 w-5" />
+        </button>
+      </div>
+      <div className="flex-1 divide-y divide-clinical-200 overflow-y-auto px-6 py-6">
+        <section className="pb-8">
+          <div className="mb-4 border-l-2 border-alert-600 pl-3">
+            <p className="text-xs font-bold tracking-wider text-alert-700">EXPIRED · HAZARD</p>
+            <p className="mt-1 text-xs leading-relaxed text-clinical-500">Auto-deducted from usable stock. Physical disposal required.</p>
+          </div>
+          {!discarded ? (
+            <>
+              <BatchRow id="BT-24018" quantity="3 jars" timing="Expired 12 days ago" />
+              <button onClick={() => setDiscarded(true)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-alert-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-alert-700">
+                <IconTrash className="h-4 w-4" /> Confirm Physical Discard
+              </button>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 rounded-xl bg-success-50 p-4 text-sm font-medium text-success-700">
+              <IconCheck className="h-4 w-4" /> Physical discard confirmed
+            </div>
+          )}
+        </section>
+
+        <section className="py-8">
+          <div className="mb-4 border-l-2 border-warning-500 pl-3">
+            <p className="text-xs font-bold tracking-wider text-warning-700">EXPIRING SOON</p>
+            <p className="mt-1 text-xs text-clinical-500">Currently usable.</p>
+          </div>
+          {!expiringRemoved ? (
+            <>
+              <BatchRow id="BT-25071" quantity="4 jars" timing="18 days left" />
+              <button onClick={() => setExpiringRemoved(true)} className="mt-3 w-full rounded-lg border border-clinical-200 px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50">
+                Remove Batch Early
+              </button>
+            </>
+          ) : (
+            <div className="rounded-xl bg-clinical-50 p-4 text-sm text-clinical-500">Batch removed from usable stock.</div>
+          )}
+        </section>
+
+        <section className="pt-8">
+          <div className="mb-4 border-l-2 border-clinical-300 pl-3">
+            <p className="text-xs font-bold tracking-wider text-clinical-700">FRESH STOCK</p>
+            <p className="mt-1 text-xs text-clinical-500">No action needed.</p>
+          </div>
+          <BatchRow id="BT-26012" quantity="11 jars" timing="14 months left · No action needed" />
+        </section>
+      </div>
+    </DrawerShell>
+  );
+}
+
+function ArchivedInventoryDrawer({
+  items,
+  onClose,
+  onReinitialize,
+}: {
+  items: InventoryRow[];
+  onClose: () => void;
+  onReinitialize: (item: InventoryRow) => void;
+}) {
+  const pageSize = 10;
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const filteredItems = useMemo(() => items.filter(item => {
+    const sku = `DEN-${item.category.slice(0, 3).toUpperCase()}-${item.id.slice(-3)}`;
+    return `${item.name} ${item.category} ${sku}`.toLowerCase().includes(query.toLowerCase());
+  }), [items, query]);
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const pageStart = (page - 1) * pageSize;
+  const pageItems = filteredItems.slice(pageStart, pageStart + pageSize);
+  const rangeStart = filteredItems.length === 0 ? 0 : pageStart + 1;
+  const rangeEnd = Math.min(pageStart + pageSize, filteredItems.length);
+
+  useEffect(() => setPage(1), [query]);
+
+  return (
+    <DrawerShell onClose={onClose} width="max-w-4xl">
+      <div className="flex items-start justify-between border-b border-clinical-200 px-6 py-5">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-clinical-100 text-clinical-500">
+            <IconArchive className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="font-display text-lg font-semibold text-clinical-900">Archived Inventory</p>
+          </div>
+        </div>
+        <button onClick={onClose} aria-label="Close archived inventory" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
+          <IconX className="h-5 w-5" />
+        </button>
+      </div>
+      <div className="border-b border-clinical-200 px-6 py-4">
+        <div className="relative">
+          <IconSearch className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-clinical-400" />
+          <input
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="Search archived items, SKUs, or categories..."
+            className="w-full rounded-full border border-clinical-200 bg-clinical-50 py-2.5 pl-11 pr-4 text-sm text-clinical-700 outline-none transition placeholder:text-clinical-400 focus:border-primary-500 focus:bg-white focus:ring-2 focus:ring-primary-100"
+          />
+        </div>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col bg-clinical-50/60 p-6">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-clinical-200 bg-white">
+          <div className="flex-1 overflow-y-auto">
+          <table className="w-full table-auto text-left text-sm">
+            <thead>
+              <tr className="border-b border-clinical-200 bg-clinical-100/80 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
+                <th className="px-5 py-3.5">Item Identity</th>
+                <th className="px-4 py-3.5">Internal SKU</th>
+                <th className="px-4 py-3.5">Archive Date</th>
+                <th className="px-5 py-3.5 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-clinical-100">
+              {pageItems.map((item, index) => (
+                <tr key={item.id} className="bg-clinical-50/40 text-clinical-500">
+                  <td className="px-5 py-4">
+                    <p className="font-semibold text-clinical-600">{item.name}</p>
+                    <p className="mt-1 text-xs italic text-clinical-400">{item.category}</p>
+                  </td>
+                  <td className="px-4 py-4 font-mono text-xs text-clinical-500">
+                    {`DEN-${item.category.slice(0, 3).toUpperCase()}-${item.id.slice(-3)}`}
+                  </td>
+                  <td className="px-4 py-4 text-xs text-clinical-500">
+                    Archived on {new Date(2026, 9, 1 + pageStart + index).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </td>
+                  <td className="px-5 py-4 text-right">
+                    <button
+                      onClick={() => onReinitialize(item)}
+                      className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-primary-700 hover:bg-primary-50 hover:text-primary-900"
+                    >
+                      <IconRestore className="h-4 w-4" />
+                      Unarchive & Reinitialize
+                      <IconChevronRight className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {pageItems.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-6 py-16 text-center">
+                    <IconSearch className="mx-auto h-6 w-6 text-clinical-300" />
+                    <p className="mt-3 text-sm font-medium text-clinical-600">No archived items found</p>
+                    <p className="mt-1 text-xs text-clinical-400">Try a different item name, SKU, or category.</p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          </div>
+          <div className="flex items-center justify-end gap-3 border-t border-clinical-200 bg-white px-5 py-3 text-xs text-clinical-500">
+            <button
+              onClick={() => setPage(current => Math.max(1, current - 1))}
+              disabled={page === 1}
+              aria-label="Previous archived inventory page"
+              className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
+            >
+              <IconChevronRight className="h-4 w-4 rotate-180" />
+            </button>
+            <span>{rangeStart}-{rangeEnd} of {filteredItems.length}</span>
+            <button
+              onClick={() => setPage(current => Math.min(totalPages, current + 1))}
+              disabled={page === totalPages}
+              aria-label="Next archived inventory page"
+              className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
+            >
+              <IconChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </DrawerShell>
+  );
+}
+
+interface InventoryProps {
+  initialEditItemName?: string | null;
+  pausedItemNames?: string[];
+  resumedItemNames?: string[];
+  receivedItemNames?: string[];
+  onResumeItem?: (itemName: string) => void;
+}
+
+export default function Inventory({
+  initialEditItemName,
+  pausedItemNames = [],
+  resumedItemNames = [],
+  receivedItemNames = [],
+  onResumeItem,
+}: InventoryProps) {
+  const pageSize = 10;
+  const [filter, setFilter] = useState<Filter>('all');
+  const [query, setQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemDrawer, setItemDrawer] = useState<InventoryRow | 'new' | null>(null);
+  const [reinitialize, setReinitialize] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [batchItem, setBatchItem] = useState<InventoryRow | null>(null);
+  const [menuId, setMenuId] = useState<string | null>(null);
+
+  const connectedInventoryRows = useMemo(() => ACTIVE_INVENTORY_ROWS.map(item => {
+    if (resumedItemNames.includes(item.name)) {
+      return { ...item, systemAction: 'Queued for next EOD batch', systemKind: 'queued' as const };
+    }
+    if (pausedItemNames.includes(item.name)) {
+      return { ...item, systemAction: 'Procurement manually paused', systemKind: 'paused' as const };
+    }
+    if (receivedItemNames.includes(item.name)) {
+      return {
+        ...item,
+        quantity: Math.min(item.max, item.quantity + 4),
+        stock: 'normal' as const,
+        expiry: item.expiry === 'none' ? item.expiry : 'fresh' as const,
+        expiryTitle: item.expiry === 'none' ? item.expiryTitle : 'All fresh',
+        expiryDetail: item.expiry === 'none' ? item.expiryDetail : 'New delivery received',
+        humanAction: undefined,
+        systemAction: 'Stock updated from delivery',
+        systemKind: 'monitoring' as const,
+      };
+    }
+    return item;
+  }), [pausedItemNames, receivedItemNames, resumedItemNames]);
+  const archivedItems = connectedInventoryRows.slice(12);
+  const filteredItems = useMemo(() => connectedInventoryRows.filter(item => {
+    const searchable = `${item.name} ${item.category} ${item.id} ${item.expiryDetail}`.toLowerCase();
+    const matchesSearch = searchable.includes(query.toLowerCase());
+    const matchesFilter = filter === 'all'
+      || (filter === 'expired' && item.expiry === 'expired')
+      || (filter === 'low' && ['low', 'critical'].includes(item.stock))
+      || (filter === 'expiring' && item.expiry === 'expiring');
+    return matchesSearch && matchesFilter;
+  }), [connectedInventoryRows, filter, query]);
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const pageStart = (currentPage - 1) * pageSize;
+  const visibleItems = filteredItems.slice(pageStart, pageStart + pageSize);
+  const rangeStart = filteredItems.length === 0 ? 0 : pageStart + 1;
+  const rangeEnd = Math.min(pageStart + pageSize, filteredItems.length);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filter, query]);
+
+  useEffect(() => {
+    if (!initialEditItemName) return;
+    const item = connectedInventoryRows.find(row => row.name === initialEditItemName);
+    if (item) setItemDrawer(item);
+  }, [connectedInventoryRows, initialEditItemName]);
+
+  useEffect(() => {
+    if (!menuId) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('[data-inventory-menu]')) {
+        setMenuId(null);
+      }
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [menuId]);
+
+  const tabs: { id: Filter; label: string; count: number }[] = [
+    { id: 'expired', label: 'EXPIRED', count: ACTIVE_INVENTORY_ROWS.filter(item => item.expiry === 'expired').length },
+    { id: 'all', label: 'All', count: ACTIVE_INVENTORY_ROWS.length },
+    { id: 'low', label: 'Low/Critical', count: ACTIVE_INVENTORY_ROWS.filter(item => ['low', 'critical'].includes(item.stock)).length },
+    { id: 'expiring', label: 'Expiring', count: ACTIVE_INVENTORY_ROWS.filter(item => item.expiry === 'expiring').length },
+  ];
+
+  return (
+    <div className="mx-auto max-w-[1500px] p-6 lg:p-8">
+      <div className="mb-7">
+        <p className="font-display text-2xl font-semibold tracking-tight text-clinical-900">Inventory</p>
+      </div>
+
+      <div className="mb-5 flex items-center gap-3">
+        <div className="relative max-w-2xl flex-1">
+          <IconSearch className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-clinical-400" />
+          <input
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="Search item, category, batch, supplier..."
+            className="w-full rounded-full border border-clinical-200 bg-white py-3 pl-12 pr-4 text-sm text-clinical-800 shadow-sm outline-none transition placeholder:text-clinical-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+          />
+        </div>
+        <button onClick={() => setItemDrawer('new')} className="flex items-center gap-2 rounded-lg bg-primary-700 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-primary-800">
+          <IconPlus className="h-4 w-4" /> Add Item
+        </button>
+      </div>
+
+      <div className="mb-4 flex items-center gap-1 border-b border-clinical-200">
+        {tabs.map(tab => {
+          const active = filter === tab.id;
+          const hazard = tab.id === 'expired';
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setFilter(tab.id)}
+              className={`relative px-4 py-3 text-xs font-semibold transition ${
+                active
+                  ? hazard ? 'text-alert-700' : 'text-primary-800'
+                  : hazard ? 'text-alert-600 hover:bg-alert-50' : 'text-clinical-500 hover:text-clinical-800'
+              }`}
+            >
+              {tab.label} ({tab.count})
+              {active && <span className={`absolute inset-x-2 bottom-0 h-0.5 ${hazard ? 'bg-alert-600' : 'bg-primary-700'}`} />}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="overflow-visible rounded-xl border border-clinical-200 bg-white shadow-sm">
+          <table className="w-full table-auto text-left text-sm">
+            <thead>
+              <tr className="border-b border-clinical-200 bg-clinical-50/80 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
+                <th className="min-w-44 px-5 py-3.5">Item</th>
+                <th className="min-w-28 px-4 py-3.5">Usable Qty</th>
+                <th className="min-w-44 px-4 py-3.5">Expiry</th>
+                <th className="min-w-32 px-4 py-3.5">Stock Status</th>
+                <th className="min-w-60 px-4 py-3.5">System Action</th>
+                <th className="sticky right-0 w-12 bg-clinical-50 px-3 py-3.5">
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-clinical-100">
+              {visibleItems.map(item => (
+                <tr key={item.id} className="group transition hover:bg-clinical-50/60">
+                  <td className="px-5 py-5 align-top">
+                    <p className="font-semibold text-clinical-900">{item.name}</p>
+                    <p className="mt-1 text-xs text-clinical-400">{item.category} · {item.id}</p>
+                  </td>
+                  <td className="px-4 py-5 align-top">
+                    <p className="text-lg font-bold leading-none text-clinical-900">
+                      {item.quantity} <span className="text-sm font-normal text-clinical-400">/ {item.max}</span>
+                    </p>
+                    <p className="mt-2 text-xs text-clinical-400">{item.unit}</p>
+                  </td>
+                  <td className="px-4 py-5 align-top">
+                    <ExpiryCell item={item} />
+                  </td>
+                  <td className="px-4 py-5 align-top">
+                    {item.systemKind === 'paused' ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-warning-100 bg-warning-50 px-2.5 py-1 text-xs font-semibold text-warning-700">
+                        <IconPause className="h-3.5 w-3.5" /> Procurement manually paused
+                      </span>
+                    ) : (
+                      <StatusBadge status={item.stock} />
+                    )}
+                  </td>
+                  <td className="px-4 py-5 align-top">
+                    <SystemAction
+                      item={item}
+                      onManage={() => setBatchItem(item)}
+                      onResume={() => onResumeItem?.(item.name)}
+                    />
+                  </td>
+                  <td className={`sticky right-0 bg-white px-3 py-5 align-top transition group-hover:bg-clinical-50 ${menuId === item.id ? 'z-40' : 'z-10'}`}>
+                    <div className="relative" data-inventory-menu>
+                      <button onClick={() => setMenuId(menuId === item.id ? null : item.id)} aria-label={`Actions for ${item.name}`} className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800">
+                        <IconMore className="h-5 w-5" />
+                      </button>
+                      {menuId === item.id && (
+                        <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
+                          <button onClick={() => { setReinitialize(false); setItemDrawer(item); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                            <IconSettings className="h-4 w-4 shrink-0 text-clinical-500" />
+                            View & Edit
+                          </button>
+                          <button onClick={() => { setBatchItem(item); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                            <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" />
+                            Manage Batches
+                          </button>
+                          <div className="my-1 border-t border-clinical-100" />
+                          <button onClick={() => setMenuId(null)} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-600 hover:bg-clinical-50">
+                            <IconArchive className="h-4 w-4 shrink-0 text-clinical-400" />
+                            Archive Item
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {visibleItems.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-16 text-center">
+                    <IconSearch className="mx-auto h-6 w-6 text-clinical-300" />
+                    <p className="mt-3 text-sm font-medium text-clinical-700">No inventory items found</p>
+                    <p className="mt-1 text-xs text-clinical-400">Try another search or filter.</p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        <div className="flex items-center justify-between border-t border-clinical-100 px-5 py-3">
+          <button
+            onClick={() => setArchiveOpen(true)}
+            className="inline-flex items-center gap-2 text-xs font-medium text-clinical-400 transition hover:text-clinical-700 hover:underline"
+          >
+            <IconArchive className="h-4 w-4" />
+            View {archivedItems.length} archived items
+          </button>
+          <div className="flex items-center gap-3 text-xs text-clinical-500">
+            <button
+              onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
+              disabled={currentPage === 1}
+              aria-label="Previous page"
+              className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
+            >
+              <IconChevronRight className="h-4 w-4 rotate-180" />
+            </button>
+            <span>{rangeStart}-{rangeEnd} of {filteredItems.length}</span>
+            <button
+              onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
+              disabled={currentPage === totalPages}
+              aria-label="Next page"
+              className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
+            >
+              <IconChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {archiveOpen && (
+        <ArchivedInventoryDrawer
+          items={archivedItems}
+          onClose={() => setArchiveOpen(false)}
+          onReinitialize={item => {
+            setArchiveOpen(false);
+            setReinitialize(true);
+            setItemDrawer(item);
+          }}
+        />
+      )}
+      {itemDrawer && (
+        <ItemDrawer
+          item={itemDrawer === 'new' ? undefined : itemDrawer}
+          reinitialize={reinitialize}
+          onResume={itemDrawer !== 'new' ? () => onResumeItem?.(itemDrawer.name) : undefined}
+          onClose={() => {
+            setItemDrawer(null);
+            setReinitialize(false);
+          }}
+        />
+      )}
+      {batchItem && <BatchDrawer item={batchItem} onClose={() => setBatchItem(null)} />}
+    </div>
+  );
+}

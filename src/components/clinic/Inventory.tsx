@@ -1,0 +1,1409 @@
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  IconCheck,
+  IconChevronRight,
+  IconClock,
+  IconExternalLink,
+  IconPackage,
+  IconPlus,
+  IconSearch,
+  IconSettings,
+  IconX,
+} from '../icons';
+import {
+  useClinic,
+  type InventoryItem,
+  type InventoryBatch,
+  type SupplyOrder,
+  type InventoryAlertLog,
+} from '../../context/ClinicContext';
+
+type StockState = 'critical' | 'low' | 'normal' | 'overstock';
+type ExpiryState = 'expired' | 'expiring' | 'fresh' | 'none';
+type Filter = 'expired' | 'all' | 'low' | 'expiring';
+
+export interface InventoryRow {
+  id: string;
+  name: string;
+  category: string;
+  quantity: number;
+  max: number;
+  unit: string;
+  stock: StockState;
+  expiry: ExpiryState;
+  expiryTitle: string;
+  expiryDetail: string;
+  humanAction?: string;
+  systemAction: string;
+  systemKind: 'queued' | 'sent' | 'monitoring';
+  sourceItem: InventoryItem;
+  activeAlert?: InventoryAlertLog;
+}
+
+/** Discriminated union describing which drawer (if any) is open. */
+type DrawerState =
+  | { kind: 'new' }
+  | { kind: 'view'; item: InventoryRow }
+  | { kind: 'edit'; item: InventoryRow };
+
+// ── Adapter: context InventoryItem → display InventoryRow ─────
+
+function buildInventoryRows(
+  inventory: InventoryItem[],
+  alertLog: InventoryAlertLog[],
+  orders: SupplyOrder[],
+  getStockStatus: (item: InventoryItem) => 'critical' | 'low' | 'ok' | 'overstock',
+  isExpired: (e: string) => boolean,
+  isExpiringSoon: (e: string) => boolean,
+): InventoryRow[] {
+  return inventory.map(item => {
+    const rawStatus = getStockStatus(item);
+    const stock: StockState = rawStatus === 'ok' ? 'normal' : rawStatus;
+
+    // Expiry classification
+    let expiry: ExpiryState = 'none';
+    let expiryTitle = 'Non-perishable';
+    let expiryDetail = 'No batch tracking';
+    const expiredBatches = item.batches.filter(b => isExpired(b.expiry));
+    const expiringBatches = item.batches.filter(b => isExpiringSoon(b.expiry));
+    if (item.batches.length === 0) {
+      expiry = 'none';
+    } else if (expiredBatches.length > 0) {
+      expiry = 'expired';
+      expiryTitle = `${expiredBatches.length} expired`;
+      expiryDetail = expiredBatches.map(b => b.batchNo).join(', ');
+    } else if (expiringBatches.length > 0) {
+      expiry = 'expiring';
+      expiryTitle = `${expiringBatches.length} expiring`;
+      const soonest = expiringBatches.reduce((a, b) =>
+        new Date(a.expiry) < new Date(b.expiry) ? a : b);
+      const daysLeft = Math.ceil((new Date(soonest.expiry).getTime() - Date.now()) / 86400000);
+      expiryDetail = `${daysLeft} days left · ${soonest.batchNo}`;
+    } else {
+      expiry = 'fresh';
+      expiryTitle = 'All fresh';
+      expiryDetail = item.batches.map(b => b.batchNo).join(', ');
+    }
+
+    const activeAlert = alertLog.find(a => a.itemId === item.id && !a.acknowledged);
+    const linkedOrder = activeAlert?.linkedOrderId
+      ? orders.find(o => o.id === activeAlert.linkedOrderId)
+      : orders.find(o => o.itemId === item.id && !['completed', 'cancelled'].includes(o.status));
+
+    let systemAction = 'Monitoring consumption';
+    let systemKind: InventoryRow['systemKind'] = 'monitoring';
+    if (activeAlert?.severity === 'overstock') {
+      systemAction = 'Ordering suppressed · overstock review';
+    } else if (linkedOrder) {
+      switch (linkedOrder.status) {
+        case 'queued':
+          systemAction = 'Queued for EOD dispatch';
+          systemKind = 'queued';
+          break;
+        case 'sent':
+          systemAction = 'PO dispatched · awaiting response';
+          systemKind = 'sent';
+          break;
+        case 'being_delivered':
+          systemAction = 'Being delivered · confirm on arrival';
+          systemKind = 'sent';
+          break;
+        case 'rerouted':
+          systemAction = 'Rerouted to backup supplier';
+          systemKind = 'sent';
+          break;
+        case 'unclear':
+          systemAction = 'Unclear supplier response · classify';
+          break;
+        case 'unavailable':
+        case 'no_response':
+          systemAction = 'Escalated · chain exhausted';
+          break;
+        default:
+          systemAction = `Order ${linkedOrder.status.replace('_', ' ')}`;
+      }
+    }
+
+    return {
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      quantity: item.quantity,
+      max: item.overstockThreshold,
+      unit: item.unit,
+      stock,
+      expiry,
+      expiryTitle,
+      expiryDetail,
+      humanAction: expiredBatches.length > 0 ? 'Awaiting physical disposal' : undefined,
+      systemAction,
+      systemKind,
+      sourceItem: item,
+      activeAlert,
+    };
+  });
+}
+
+// ── Small icon helpers ────────────────────────────────────────
+
+function IconTrash({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconMore({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="currentColor" viewBox="0 0 24 24">
+      <circle cx="12" cy="5" r="1.75" />
+      <circle cx="12" cy="12" r="1.75" />
+      <circle cx="12" cy="19" r="1.75" />
+    </svg>
+  );
+}
+
+function IconInfinity({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path d="M18.5 8.5c-3.5 0-5.4 7-9 7a3.5 3.5 0 1 1 0-7c3.6 0 5.5 7 9 7a3.5 3.5 0 1 0 0-7Z" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconTruck({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="M3 5h11v12H3zM14 9h4l3 4v4h-7z" strokeLinejoin="round" />
+      <circle cx="7" cy="18" r="2" />
+      <circle cx="18" cy="18" r="2" />
+    </svg>
+  );
+}
+
+function IconPencil({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m14 7 3 3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconBell({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// ── Display atoms ─────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: StockState }) {
+  const styles: Record<StockState, string> = {
+    critical: 'bg-alert-50 text-alert-700 border-alert-100',
+    low: 'bg-warning-50 text-warning-700 border-warning-100',
+    normal: 'bg-success-50 text-success-700 border-success-100',
+    overstock: 'bg-blue-50 text-blue-700 border-blue-100',
+  };
+  const labels: Record<StockState, string> = {
+    critical: 'Critical low',
+    low: 'Low',
+    normal: 'Normal',
+    overstock: 'Overstock',
+  };
+  return (
+    <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${styles[status]}`}>
+      {labels[status]}
+    </span>
+  );
+}
+
+function ExpiryCell({ item }: { item: InventoryRow }) {
+  if (item.expiry === 'expired') {
+    return (
+      <div>
+        <div className="flex items-center gap-1.5 font-semibold text-alert-700">
+          <span className="flex h-4 w-4 items-center justify-center rounded-full bg-alert-100 text-[10px]">!</span>
+          {item.expiryTitle}
+        </div>
+        <p className="mt-1 text-xs text-alert-600">{item.expiryDetail}</p>
+      </div>
+    );
+  }
+  if (item.expiry === 'expiring') {
+    return (
+      <div>
+        <div className="flex items-center gap-1.5 font-semibold text-warning-700">
+          <IconClock className="h-4 w-4" />
+          {item.expiryTitle}
+        </div>
+        <p className="mt-1 text-xs text-warning-700">{item.expiryDetail}</p>
+      </div>
+    );
+  }
+  if (item.expiry === 'none') {
+    return (
+      <div>
+        <div className="flex items-center gap-1.5 font-medium text-clinical-700">
+          <IconInfinity className="h-4 w-4" />
+          {item.expiryTitle}
+        </div>
+        <p className="mt-1 text-xs text-clinical-400">{item.expiryDetail}</p>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 font-semibold text-success-700">
+        <IconCheck className="h-4 w-4" />
+        {item.expiryTitle}
+      </div>
+      <p className="mt-1 text-xs text-clinical-400">{item.expiryDetail}</p>
+    </div>
+  );
+}
+
+function SystemAction({
+  item,
+  onManage,
+  onAcknowledge,
+}: {
+  item: InventoryRow;
+  onManage: () => void;
+  onAcknowledge: () => void;
+}) {
+  const SystemIcon = item.systemKind === 'sent'
+    ? IconTruck
+    : item.systemKind === 'monitoring'
+        ? IconPackage
+        : IconClock;
+
+  return (
+    <div className="min-w-48 space-y-2 text-xs">
+      {item.humanAction && (
+        <div className="flex items-start gap-2 text-alert-700">
+          <IconTrash className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-medium">{item.humanAction}</p>
+            <button onClick={onManage} className="mt-1 inline-flex items-center gap-1 font-semibold text-primary-700 hover:text-primary-900">
+              Manage batches <IconExternalLink className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="flex items-center gap-2 text-clinical-600">
+        <SystemIcon className="h-4 w-4 shrink-0" />
+        <span>{item.systemAction}</span>
+      </div>
+      {item.activeAlert && (
+        <button
+          onClick={onAcknowledge}
+          className="inline-flex items-center gap-1 rounded-md border border-warning-200 bg-warning-50 px-2 py-0.5 text-[10px] font-semibold text-warning-700 hover:bg-warning-100 transition"
+        >
+          <IconBell className="h-3 w-3" />
+          Acknowledge {item.activeAlert.severity} alert
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Drawer primitives ────────────────────────────────────────
+
+function DrawerShell({ children, onClose, width = 'max-w-xl' }: { children: ReactNode; onClose: () => void; width?: string }) {
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button aria-label="Close drawer" onClick={onClose} className="absolute inset-0 bg-clinical-900/30" />
+      <section className={`relative flex h-full w-full ${width} flex-col bg-white shadow-2xl`}>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-semibold text-clinical-700">{label}</span>
+      {children}
+      {hint && <span className="mt-1 block text-[10px] text-clinical-400">{hint}</span>}
+    </label>
+  );
+}
+
+const inputClass = 'w-full rounded-lg border border-clinical-200 bg-white px-3 py-2.5 text-sm text-clinical-800 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100';
+
+// ── ItemDetails (read-only view) ──────────────────────────────
+
+function ItemDetails({ item }: { item: InventoryRow }) {
+  const { deductionLog, suppliers } = useClinic();
+  const [historyRange, setHistoryRange] = useState<7 | 30 | 90>(30);
+  const [procedureFilter, setProcedureFilter] = useState<string>('all');
+
+  const usageEntries = useMemo(() => {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - historyRange);
+    return deductionLog
+      .filter(entry => entry.itemId === item.id && new Date(entry.date) >= cutoff)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [deductionLog, historyRange, item.id]);
+
+  /** Unique procedures appearing in the current window, with usage totals. */
+  const procedureBreakdown = useMemo(() => {
+    const map = new Map<string, number>();
+    usageEntries.forEach(entry => {
+      map.set(entry.procedure, (map.get(entry.procedure) ?? 0) + entry.qty);
+    });
+    return Array.from(map.entries())
+      .map(([procedure, qty]) => ({ procedure, qty }))
+      .sort((a, b) => b.qty - a.qty);
+  }, [usageEntries]);
+
+  const filteredEntries = procedureFilter === 'all'
+    ? usageEntries
+    : usageEntries.filter(entry => entry.procedure === procedureFilter);
+
+  const totalUsed = usageEntries.reduce((total, entry) => total + entry.qty, 0);
+
+  const primarySupplier = suppliers.find(s => s.id === item.sourceItem.supplierId);
+  const backupSuppliers = item.sourceItem.backupSupplierIds
+    .map(id => suppliers.find(s => s.id === id)?.name)
+    .filter(Boolean);
+
+  const thresholds = [
+    { label: 'Critical Low', value: item.sourceItem.criticalThreshold, tone: 'text-alert-700' },
+    { label: 'Low / Reorder', value: item.sourceItem.reorderThreshold, tone: 'text-warning-700' },
+    { label: 'Overstock / Max', value: item.sourceItem.overstockThreshold, tone: 'text-blue-700' },
+  ];
+
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-6">
+      {/* Section 1 — Live stock + thresholds */}
+      <section className="border-b border-clinical-200 pb-7">
+        <p className="mb-5 font-semibold text-clinical-900">Stock &amp; thresholds</p>
+
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-clinical-400">Usable quantity</p>
+            <p className="mt-1 text-3xl font-bold leading-none text-clinical-900">
+              {item.quantity}
+              <span className="ml-2 text-base font-normal text-clinical-400">{item.unit}</span>
+            </p>
+          </div>
+          <StatusBadge status={item.stock} />
+        </div>
+
+        <dl className="mt-5 grid grid-cols-3 gap-3">
+          {thresholds.map(metric => (
+            <div key={metric.label} className="rounded-xl bg-clinical-50 p-3">
+              <dt className="text-[10px] font-semibold uppercase tracking-wide text-clinical-400">{metric.label}</dt>
+              <dd className={`mt-1 text-lg font-bold ${metric.tone}`}>{metric.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      {/* Section 2 — Supplier routing (read-only) */}
+      <section className="border-b border-clinical-200 py-7">
+        <p className="mb-4 font-semibold text-clinical-900">Supplier routing</p>
+        <dl className="grid grid-cols-1 gap-3 text-sm">
+          <div className="rounded-xl border border-clinical-100 bg-clinical-50/60 p-3">
+            <dt className="text-[10px] font-semibold uppercase tracking-wide text-clinical-400">Primary supplier</dt>
+            <dd className="mt-1 font-medium text-clinical-800">
+              {primarySupplier?.name ?? item.sourceItem.supplierId}
+            </dd>
+            {primarySupplier?.email && (
+              <dd className="mt-0.5 text-[11px] text-clinical-500">{primarySupplier.email}</dd>
+            )}
+          </div>
+          <div className="rounded-xl border border-clinical-100 bg-clinical-50/60 p-3">
+            <dt className="text-[10px] font-semibold uppercase tracking-wide text-clinical-400">Backup chain (in order)</dt>
+            <dd className="mt-1 font-medium text-clinical-800">
+              {backupSuppliers.length > 0
+                ? backupSuppliers.map((name, i) => `${i + 1}. ${name}`).join('  →  ')
+                : 'None configured'}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      {/* Section 3 — Deduction history */}
+      <section className="pt-7">
+        <p className="mb-4 font-semibold text-clinical-900">Deduction history</p>
+
+        <div className="flex items-end justify-between">
+          <p className="text-xs text-clinical-400">Recorded procedure deductions</p>
+          <div className="text-right">
+            <p className="text-lg font-bold leading-none text-clinical-900">{totalUsed}</p>
+            <p className="text-[11px] text-clinical-400">{item.unit} used</p>
+          </div>
+        </div>
+
+        {/* Range toggle */}
+        <div className="mt-4 inline-flex rounded-lg border border-clinical-200 bg-white p-0.5">
+          {([7, 30, 90] as const).map(range => (
+            <button
+              key={range}
+              type="button"
+              onClick={() => setHistoryRange(range)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                historyRange === range
+                  ? 'bg-clinical-800 text-white'
+                  : 'text-clinical-500 hover:bg-clinical-50 hover:text-clinical-800'
+              }`}
+            >
+              {range} days
+            </button>
+          ))}
+        </div>
+
+        {/* Procedure filter */}
+        {procedureBreakdown.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => setProcedureFilter('all')}
+              className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                procedureFilter === 'all'
+                  ? 'border-primary-300 bg-primary-50 text-primary-700'
+                  : 'border-clinical-200 bg-white text-clinical-600 hover:border-primary-300'
+              }`}
+            >
+              All procedures
+            </button>
+            {procedureBreakdown.map(({ procedure, qty }) => (
+              <button
+                key={procedure}
+                type="button"
+                onClick={() => setProcedureFilter(procedure)}
+                className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                  procedureFilter === procedure
+                    ? 'border-primary-300 bg-primary-50 text-primary-700'
+                    : 'border-clinical-200 bg-white text-clinical-600 hover:border-primary-300'
+                }`}
+              >
+                {procedure} <span className="ml-1 opacity-60">{qty}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Entries list */}
+        {filteredEntries.length > 0 ? (
+          <div className="mt-4 divide-y divide-clinical-100 rounded-xl border border-clinical-200">
+            {filteredEntries.slice(0, 20).map(entry => (
+              <div key={entry.id} className="flex items-start justify-between gap-4 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium text-clinical-700">{entry.procedure}</p>
+                  <p className="mt-1 truncate text-[11px] text-clinical-400">
+                    {entry.performedBy} · Patient {entry.patientId}
+                  </p>
+                </div>
+                <div className="shrink-0 text-right">
+                  <p className="text-xs font-semibold text-clinical-700">-{entry.qty} {item.unit}</p>
+                  <p className="mt-1 text-[11px] text-clinical-400">
+                    {new Date(entry.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-4 rounded-xl border border-dashed border-clinical-200 px-4 py-8 text-center">
+            <IconClock className="mx-auto h-5 w-5 text-clinical-300" />
+            <p className="mt-2 text-xs font-medium text-clinical-600">
+              {procedureFilter === 'all' ? 'No consumption recorded in this period' : 'No deductions for this procedure'}
+            </p>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ── ItemDrawer — view OR edit mode via initialMode ───────────
+
+interface ItemDrawerProps {
+  item?: InventoryRow;
+  initialMode?: 'view' | 'edit';
+  onSave: (item: InventoryItem) => void;
+  onClose: () => void;
+}
+
+function ItemDrawer({ item, initialMode = 'view', onSave, onClose }: ItemDrawerProps) {
+  const { suppliers } = useClinic();
+  const isNew = !item;
+  const source = item?.sourceItem;
+
+  const [editing, setEditing] = useState(isNew || initialMode === 'edit');
+
+  // Form state — only fields this module owns.
+  const [name, setName] = useState(source?.name ?? '');
+  const [category, setCategory] = useState(source?.category ?? 'Restorative');
+  const [unit, setUnit] = useState(source?.unit ?? 'unit');
+  const [criticalThreshold, setCriticalThreshold] = useState(source?.criticalThreshold ?? 5);
+  const [reorderThreshold, setReorderThreshold] = useState(source?.reorderThreshold ?? 10);
+  const [overstockThreshold, setOverstockThreshold] = useState(source?.overstockThreshold ?? 50);
+  const [error, setError] = useState('');
+
+  const resetForm = () => {
+    setName(source?.name ?? '');
+    setCategory(source?.category ?? 'Restorative');
+    setUnit(source?.unit ?? 'unit');
+    setCriticalThreshold(source?.criticalThreshold ?? 5);
+    setReorderThreshold(source?.reorderThreshold ?? 10);
+    setOverstockThreshold(source?.overstockThreshold ?? 50);
+    setError('');
+  };
+
+  const handleCancel = () => {
+    if (isNew) {
+      onClose();
+    } else {
+      resetForm();
+      setEditing(false);
+    }
+  };
+
+  const handleSave = (event: FormEvent) => {
+    event.preventDefault();
+    if (!name.trim()) { setError('Item name is required.'); return; }
+    if (criticalThreshold >= reorderThreshold) {
+      setError('Critical Low must be strictly less than Low / Reorder.');
+      return;
+    }
+    if (reorderThreshold >= overstockThreshold) {
+      setError('Low / Reorder must be strictly less than Overstock / Max.');
+      return;
+    }
+
+    const nextItem: InventoryItem = {
+      id: source?.id ?? `I${String(Date.now()).slice(-3)}`,
+      name: name.trim(),
+      category,
+      unit,
+      // Preserved from source — not editable in this drawer.
+      unitCost: source?.unitCost ?? 0,
+      supplierId: source?.supplierId ?? suppliers[0]?.id ?? 'S01',
+      backupSupplierIds: source?.backupSupplierIds ?? [],
+      quantity: source?.quantity ?? 0,
+      criticalThreshold,
+      reorderThreshold,
+      overstockThreshold,
+      batches: source?.batches ?? [],
+    };
+    onSave(nextItem);
+    onClose();
+  };
+
+  const headerTitle = !editing && item
+    ? item.name
+    : isNew
+      ? 'Add Item'
+      : 'Edit Configuration';
+
+  const headerSubtitle = !editing && item
+    ? `${item.category} · Master supply record`
+    : isNew
+      ? 'Register a new supply item'
+      : `Updating ${item?.name ?? ''}`;
+
+  return (
+    <DrawerShell onClose={onClose}>
+      <form onSubmit={handleSave} className="flex h-full flex-col">
+        <div className="flex items-start justify-between gap-4 border-b border-clinical-200 px-6 py-4">
+          <div className="flex items-start gap-3">
+            <button type="button" onClick={onClose} aria-label="Close" className="mt-1 rounded-lg p-2 text-clinical-500 hover:bg-clinical-100 hover:text-clinical-900">
+              <IconX className="h-5 w-5" />
+            </button>
+            <div>
+              <p className="font-display text-lg font-semibold text-clinical-900">{headerTitle}</p>
+              <p className="mt-0.5 text-xs text-clinical-500">{headerSubtitle}</p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {!editing && item ? (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50"
+              >
+                <IconPencil className="h-4 w-4" /> Edit Configuration
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-primary-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-primary-800"
+                >
+                  {isNew ? 'Save Item' : 'Save Changes'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {!editing && item ? (
+          <ItemDetails item={item} />
+        ) : (
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            {error && (
+              <div className="mb-4 rounded-lg border border-alert-200 bg-alert-50 px-4 py-3 text-xs text-alert-700">
+                {error}
+              </div>
+            )}
+
+            {/* Identity */}
+            <section className="border-b border-clinical-200 pb-7">
+              <p className="mb-5 font-semibold text-clinical-900">Item identity</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <Field label="Item Name">
+                    <input
+                      className={inputClass}
+                      value={name}
+                      onChange={e => setName(e.target.value)}
+                      placeholder="e.g. Composite Resin A2"
+                      required
+                    />
+                  </Field>
+                </div>
+                <Field label="Category">
+                  <select className={inputClass} value={category} onChange={e => setCategory(e.target.value)}>
+                    <option>Restorative</option>
+                    <option>Anesthetics</option>
+                    <option>Consumables</option>
+                    <option>Isolation</option>
+                  </select>
+                </Field>
+                <Field label="Unit" hint="syringe / bottle / pack / pair">
+                  <input
+                    className={inputClass}
+                    value={unit}
+                    onChange={e => setUnit(e.target.value)}
+                    placeholder="unit"
+                  />
+                </Field>
+              </div>
+            </section>
+
+            {/* Thresholds */}
+            <section className="py-7">
+              <p className="mb-4 font-semibold text-clinical-900">Alert thresholds</p>
+              <p className="mb-4 text-xs leading-relaxed text-clinical-400">
+                Must satisfy <strong className="text-clinical-600">Critical Low &lt; Low / Reorder &lt; Overstock / Max</strong>.
+              </p>
+              <div className="grid grid-cols-3 gap-3">
+                <Field label="Critical Low">
+                  <input
+                    type="number"
+                    className={inputClass}
+                    value={criticalThreshold}
+                    onChange={e => setCriticalThreshold(Number(e.target.value) || 0)}
+                    min="0"
+                  />
+                </Field>
+                <Field label="Low / Reorder">
+                  <input
+                    type="number"
+                    className={inputClass}
+                    value={reorderThreshold}
+                    onChange={e => setReorderThreshold(Number(e.target.value) || 0)}
+                    min="0"
+                  />
+                </Field>
+                <Field label="Overstock / Max">
+                  <input
+                    type="number"
+                    className={inputClass}
+                    value={overstockThreshold}
+                    onChange={e => setOverstockThreshold(Number(e.target.value) || 0)}
+                    min="0"
+                  />
+                </Field>
+              </div>
+            </section>
+
+            {/* Supplier routing note */}
+            <section className="rounded-xl border border-clinical-100 bg-clinical-50/60 p-3.5">
+              <p className="text-[11px] leading-relaxed text-clinical-500">
+                Primary and backup supplier assignments are not editable from this drawer.
+              </p>
+            </section>
+          </div>
+        )}
+      </form>
+    </DrawerShell>
+  );
+}
+
+// ── BatchDrawer — add / discard / manage batches ──────────────
+
+interface AddBatchFormProps {
+  unit: string;
+  onSubmit: (batch: InventoryBatch) => void;
+  onCancel: () => void;
+}
+
+function AddBatchForm({ unit, onSubmit, onCancel }: AddBatchFormProps) {
+  const [batchNo, setBatchNo] = useState('');
+  const [qty, setQty] = useState('1');
+  const [expiry, setExpiry] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!batchNo.trim()) { setError('Batch / Lot ID is required.'); return; }
+    const parsedQty = Number(qty);
+    if (!Number.isFinite(parsedQty) || parsedQty <= 0) { setError('Quantity must be greater than 0.'); return; }
+    if (!expiry) { setError('Expiration date is required.'); return; }
+    if (new Date(expiry) < new Date(new Date().toDateString())) {
+      setError('Expiration date cannot be in the past.');
+      return;
+    }
+    onSubmit({ batchNo: batchNo.trim(), qty: parsedQty, expiry });
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="rounded-xl border border-primary-200 bg-primary-50/60 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-xs font-semibold text-primary-800">Register new batch</p>
+        <button type="button" onClick={onCancel} className="rounded p-1 text-primary-500 hover:bg-primary-100">
+          <IconX className="h-4 w-4" />
+        </button>
+      </div>
+      {error && (
+        <p className="mb-3 rounded-lg border border-alert-200 bg-alert-50 px-3 py-2 text-[11px] text-alert-700">{error}</p>
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="col-span-2">
+          <Field label="Batch / Lot ID">
+            <input
+              className={inputClass}
+              value={batchNo}
+              onChange={e => setBatchNo(e.target.value)}
+              placeholder="e.g. B2026-11A"
+            />
+          </Field>
+        </div>
+        <Field label={`Quantity (${unit})`}>
+          <input
+            type="number"
+            min="1"
+            className={inputClass}
+            value={qty}
+            onChange={e => setQty(e.target.value)}
+          />
+        </Field>
+        <Field label="Expiration date">
+          <input
+            type="date"
+            className={inputClass}
+            value={expiry}
+            onChange={e => setExpiry(e.target.value)}
+          />
+        </Field>
+      </div>
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-lg border border-clinical-200 bg-white px-3 py-2 text-xs font-semibold text-clinical-700 hover:bg-clinical-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          className="rounded-lg bg-primary-700 px-3 py-2 text-xs font-semibold text-white hover:bg-primary-800"
+        >
+          Add Batch
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function BatchRow({ id, quantity, timing }: { id: string; quantity: string; timing: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-xl border border-clinical-200 bg-white px-4 py-3">
+      <div>
+        <p className="font-mono text-xs font-semibold text-clinical-800">{id}</p>
+        <p className="mt-1 text-xs text-clinical-400">{timing}</p>
+      </div>
+      <p className="text-sm font-bold text-clinical-900">{quantity}</p>
+    </div>
+  );
+}
+
+function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => void }) {
+  const { discardBatch, saveInventoryItem } = useClinic();
+  const source = item.sourceItem;
+
+  const [showAddBatch, setShowAddBatch] = useState(false);
+  const [discarded, setDiscarded] = useState<string[]>([]);
+  const [removedEarly, setRemovedEarly] = useState<string[]>([]);
+
+  const now = Date.now();
+  const batches = source.batches;
+  const expired = batches.filter(b => new Date(b.expiry).getTime() < now);
+  const expiringSoon = batches.filter(b => {
+    const t = new Date(b.expiry).getTime();
+    return t >= now && t - now <= 30 * 86400000;
+  });
+  const fresh = batches.filter(b => new Date(b.expiry).getTime() - now > 30 * 86400000);
+
+  const handleAddBatch = (batch: InventoryBatch) => {
+    saveInventoryItem({
+      ...source,
+      quantity: source.quantity + batch.qty,
+      batches: [...source.batches, batch],
+    });
+    setShowAddBatch(false);
+  };
+
+  return (
+    <DrawerShell onClose={onClose} width="max-w-lg">
+      <div className="flex items-start justify-between border-b border-clinical-200 px-6 py-5">
+        <div>
+          <p className="font-display text-lg font-semibold text-clinical-900">{item.name}</p>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-xs font-medium uppercase tracking-wide text-clinical-400">Usable stock</span>
+            <span className="text-xl font-bold text-clinical-900">{item.quantity}</span>
+            <span className="text-xs text-clinical-400">{item.unit}</span>
+          </div>
+        </div>
+        <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
+          <IconX className="h-5 w-5" />
+        </button>
+      </div>
+
+      <div className="flex-1 divide-y divide-clinical-200 overflow-y-auto px-6 py-6">
+        {/* Add batch */}
+        {!showAddBatch ? (
+          <div className="pb-6">
+            <button
+              type="button"
+              onClick={() => setShowAddBatch(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary-200 bg-primary-50/40 px-4 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-400 hover:bg-primary-50"
+            >
+              <IconPlus className="h-4 w-4" /> Register New Batch
+            </button>
+          </div>
+        ) : (
+          <div className="pb-6">
+            <AddBatchForm unit={item.unit} onSubmit={handleAddBatch} onCancel={() => setShowAddBatch(false)} />
+          </div>
+        )}
+
+        {expired.length > 0 && (
+          <section className="py-6 first:pt-0">
+            <div className="mb-4 border-l-2 border-alert-600 pl-3">
+              <p className="text-xs font-bold tracking-wider text-alert-700">EXPIRED · HAZARD</p>
+              <p className="mt-1 text-xs leading-relaxed text-clinical-500">Auto-deducted from usable stock. Physical disposal required.</p>
+            </div>
+            {expired.map(b => {
+              const done = discarded.includes(b.batchNo);
+              return (
+                <div key={b.batchNo} className="mb-3">
+                  <BatchRow
+                    id={b.batchNo}
+                    quantity={`${b.qty} ${item.unit}`}
+                    timing={`Expired ${Math.round((now - new Date(b.expiry).getTime()) / 86400000)} days ago`}
+                  />
+                  {!done ? (
+                    <button
+                      onClick={() => {
+                        discardBatch(item.id, b.batchNo);
+                        setDiscarded(prev => [...prev, b.batchNo]);
+                      }}
+                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-alert-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-alert-700"
+                    >
+                      <IconTrash className="h-4 w-4" /> Confirm Physical Discard
+                    </button>
+                  ) : (
+                    <div className="mt-2 flex items-center gap-2 rounded-xl bg-success-50 p-3 text-sm font-medium text-success-700">
+                      <IconCheck className="h-4 w-4" /> Physical discard confirmed · stock updated
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </section>
+        )}
+
+        {expiringSoon.length > 0 && (
+          <section className="py-6 first:pt-0">
+            <div className="mb-4 border-l-2 border-warning-500 pl-3">
+              <p className="text-xs font-bold tracking-wider text-warning-700">EXPIRING SOON</p>
+              <p className="mt-1 text-xs text-clinical-500">Currently usable — flagged within the alert window.</p>
+            </div>
+            {expiringSoon.map(b => {
+              const done = removedEarly.includes(b.batchNo);
+              return (
+                <div key={b.batchNo} className="mb-3">
+                  <BatchRow
+                    id={b.batchNo}
+                    quantity={`${b.qty} ${item.unit}`}
+                    timing={`${Math.round((new Date(b.expiry).getTime() - now) / 86400000)} days left`}
+                  />
+                  {!done ? (
+                    <button
+                      onClick={() => {
+                        discardBatch(item.id, b.batchNo);
+                        setRemovedEarly(prev => [...prev, b.batchNo]);
+                      }}
+                      className="mt-2 w-full rounded-lg border border-clinical-200 px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50"
+                    >
+                      Remove Batch Early
+                    </button>
+                  ) : (
+                    <div className="mt-2 rounded-xl bg-clinical-50 p-3 text-sm text-clinical-500">Batch removed from usable stock.</div>
+                  )}
+                </div>
+              );
+            })}
+          </section>
+        )}
+
+        {fresh.length > 0 && (
+          <section className="py-6 first:pt-0">
+            <div className="mb-4 border-l-2 border-clinical-300 pl-3">
+              <p className="text-xs font-bold tracking-wider text-clinical-700">FRESH STOCK</p>
+              <p className="mt-1 text-xs text-clinical-500">No action needed.</p>
+            </div>
+            {fresh.map(b => (
+              <BatchRow
+                key={b.batchNo}
+                id={b.batchNo}
+                quantity={`${b.qty} ${item.unit}`}
+                timing={`${Math.round((new Date(b.expiry).getTime() - now) / 86400000)} days left · No action needed`}
+              />
+            ))}
+          </section>
+        )}
+
+        {batches.length === 0 && !showAddBatch && (
+          <div className="py-10 text-center">
+            <IconPackage className="mx-auto h-6 w-6 text-clinical-300" />
+            <p className="mt-3 text-sm font-medium text-clinical-600">No batches tracked</p>
+            <p className="mt-1 text-xs text-clinical-400">Register a batch above to start tracking quantity and expiration.</p>
+          </div>
+        )}
+      </div>
+    </DrawerShell>
+  );
+}
+
+// ── Alert settings popover ────────────────────────────────────
+
+function AlertSettingsPopover({ onClose }: { onClose: () => void }) {
+  const { expiryAlertDays, setExpiryAlertDays, automationConfig, setAutomationConfig } = useClinic();
+  return (
+    <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-clinical-200 bg-white p-4 shadow-xl">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-xs font-semibold text-clinical-800">Automation Settings</p>
+        <button onClick={onClose} className="text-clinical-400 hover:text-clinical-700">
+          <IconX className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="space-y-3 text-xs">
+        <label className="block">
+          <span className="mb-1 block font-medium text-clinical-600">Expiry alert window (days)</span>
+          <input
+            type="number"
+            min="1"
+            max="180"
+            value={expiryAlertDays}
+            onChange={e => setExpiryAlertDays(Math.max(1, Number(e.target.value) || 30))}
+            className="w-full rounded-lg border border-clinical-200 px-3 py-2 text-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-100 outline-none"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block font-medium text-clinical-600">Response window (hours)</span>
+          <input
+            type="number"
+            min="1"
+            value={automationConfig.responseWindowHours}
+            onChange={e => setAutomationConfig({ ...automationConfig, responseWindowHours: Math.max(1, Number(e.target.value) || 24) })}
+            className="w-full rounded-lg border border-clinical-200 px-3 py-2 text-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-100 outline-none"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block font-medium text-clinical-600">EOD dispatch hour (0–23)</span>
+          <input
+            type="number"
+            min="0"
+            max="23"
+            value={automationConfig.eodDispatchHour}
+            onChange={e => setAutomationConfig({ ...automationConfig, eodDispatchHour: Math.min(23, Math.max(0, Number(e.target.value) || 18)) })}
+            className="w-full rounded-lg border border-clinical-200 px-3 py-2 text-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-100 outline-none"
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// ── Delete confirmation modal ─────────────────────────────────
+
+function DeleteItemConfirm({
+  item,
+  onConfirm,
+  onCancel,
+}: {
+  item: InventoryRow;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center">
+      <button aria-label="Cancel" onClick={onCancel} className="absolute inset-0 bg-clinical-900/40" />
+      <div className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-alert-50 text-alert-600">
+            <IconTrash className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="font-display text-base font-semibold text-clinical-900">Delete inventory item?</p>
+            <p className="mt-1 text-xs leading-relaxed text-clinical-500">
+              <strong className="text-clinical-700">{item.name}</strong> will be removed from the master supply list.
+              Historical deduction entries are retained in the audit log, but the item can no longer receive new deductions.
+            </p>
+          </div>
+        </div>
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-lg bg-alert-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-alert-700"
+          >
+            Delete Item
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Inventory component ──────────────────────────────────
+
+interface InventoryProps {
+  initialEditItemName?: string | null;
+}
+
+export default function Inventory({ initialEditItemName }: InventoryProps = {}) {
+  const pageSize = 10;
+  const {
+    inventory,
+    orders,
+    inventoryAlertLog,
+    getStockStatus,
+    isExpired,
+    isExpiringSoon,
+    acknowledgeAlert,
+    saveInventoryItem,
+    removeInventoryItem,
+  } = useClinic();
+
+  const [filter, setFilter] = useState<Filter>('all');
+  const [query, setQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemDrawer, setItemDrawer] = useState<DrawerState | null>(null);
+  const [batchItem, setBatchItem] = useState<InventoryRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<InventoryRow | null>(null);
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+
+  const connectedInventoryRows = useMemo(
+    () => buildInventoryRows(inventory, inventoryAlertLog, orders, getStockStatus, isExpired, isExpiringSoon),
+    [inventory, inventoryAlertLog, orders, getStockStatus, isExpired, isExpiringSoon],
+  );
+
+  const filteredItems = useMemo(() => connectedInventoryRows.filter(item => {
+    const searchable = `${item.name} ${item.category} ${item.id} ${item.expiryDetail}`.toLowerCase();
+    const matchesSearch = searchable.includes(query.toLowerCase());
+    const matchesFilter = filter === 'all'
+      || (filter === 'expired' && item.expiry === 'expired')
+      || (filter === 'low' && ['low', 'critical'].includes(item.stock))
+      || (filter === 'expiring' && item.expiry === 'expiring');
+    return matchesSearch && matchesFilter;
+  }), [connectedInventoryRows, filter, query]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const pageStart = (currentPage - 1) * pageSize;
+  const visibleItems = filteredItems.slice(pageStart, pageStart + pageSize);
+  const rangeStart = filteredItems.length === 0 ? 0 : pageStart + 1;
+  const rangeEnd = Math.min(pageStart + pageSize, filteredItems.length);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filter, query]);
+
+  // Deep-link into a specific item's edit view.
+  useEffect(() => {
+    if (!initialEditItemName) return;
+    const item = connectedInventoryRows.find(row => row.name === initialEditItemName);
+    if (item) setItemDrawer({ kind: 'edit', item });
+  }, [connectedInventoryRows, initialEditItemName]);
+
+  useEffect(() => {
+    if (!menuId) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('[data-inventory-menu]')) {
+        setMenuId(null);
+      }
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [menuId]);
+
+  useEffect(() => {
+    if (!showSettings) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('[data-inventory-settings]')) {
+        setShowSettings(false);
+      }
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [showSettings]);
+
+  const tabs: { id: Filter; label: string; count: number }[] = [
+    { id: 'expired', label: 'EXPIRED', count: connectedInventoryRows.filter(item => item.expiry === 'expired').length },
+    { id: 'all', label: 'All', count: connectedInventoryRows.length },
+    { id: 'low', label: 'Low/Critical', count: connectedInventoryRows.filter(item => ['low', 'critical'].includes(item.stock)).length },
+    { id: 'expiring', label: 'Expiring', count: connectedInventoryRows.filter(item => item.expiry === 'expiring').length },
+  ];
+
+  return (
+    <div className="mx-auto max-w-[1500px] p-6 lg:p-8">
+      <div className="mb-7 flex items-center justify-between">
+        <div>
+          <p className="font-display text-2xl font-semibold tracking-tight text-clinical-900">Inventory</p>
+          <p className="mt-0.5 text-xs text-clinical-500">Live stock, thresholds, and deduction history.</p>
+        </div>
+        <div className="relative" data-inventory-settings>
+          <button
+            onClick={() => setShowSettings(current => !current)}
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
+              showSettings
+                ? 'border-primary-300 bg-primary-50 text-primary-700'
+                : 'border-clinical-200 bg-white text-clinical-600 hover:border-primary-300'
+            }`}
+          >
+            <IconSettings className="h-4 w-4" />
+            Automation Settings
+          </button>
+          {showSettings && <AlertSettingsPopover onClose={() => setShowSettings(false)} />}
+        </div>
+      </div>
+
+      <div className="mb-5 flex items-center gap-3">
+        <div className="relative max-w-2xl flex-1">
+          <IconSearch className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-clinical-400" />
+          <input
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="Search item, category, batch, supplier..."
+            className="w-full rounded-full border border-clinical-200 bg-white py-3 pl-12 pr-4 text-sm text-clinical-800 shadow-sm outline-none transition placeholder:text-clinical-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+          />
+        </div>
+        <button
+          onClick={() => setItemDrawer({ kind: 'new' })}
+          className="flex items-center gap-2 rounded-lg bg-primary-700 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-primary-800"
+        >
+          <IconPlus className="h-4 w-4" /> Add Item
+        </button>
+      </div>
+
+      <div className="mb-4 flex items-center gap-1 border-b border-clinical-200">
+        {tabs.map(tab => {
+          const active = filter === tab.id;
+          const hazard = tab.id === 'expired';
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setFilter(tab.id)}
+              className={`relative px-4 py-3 text-xs font-semibold transition ${
+                active
+                  ? hazard ? 'text-alert-700' : 'text-primary-800'
+                  : hazard ? 'text-alert-600 hover:bg-alert-50' : 'text-clinical-500 hover:text-clinical-800'
+              }`}
+            >
+              {tab.label} ({tab.count})
+              {active && <span className={`absolute inset-x-2 bottom-0 h-0.5 ${hazard ? 'bg-alert-600' : 'bg-primary-700'}`} />}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="overflow-visible rounded-xl border border-clinical-200 bg-white shadow-sm">
+        <table className="w-full table-auto text-left text-sm">
+          <thead>
+            <tr className="border-b border-clinical-200 bg-clinical-50/80 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
+              <th className="min-w-44 px-5 py-3.5">Item</th>
+              <th className="min-w-28 px-4 py-3.5">Usable Qty</th>
+              <th className="min-w-44 px-4 py-3.5">Expiry</th>
+              <th className="min-w-32 px-4 py-3.5">Stock Status</th>
+              <th className="min-w-60 px-4 py-3.5">System Action</th>
+              <th className="sticky right-0 w-12 bg-clinical-50 px-3 py-3.5">
+                <span className="sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-clinical-100">
+            {visibleItems.map(item => (
+              <tr key={item.id} className="group transition hover:bg-clinical-50/60">
+                <td className="px-5 py-5 align-top">
+                  <p className="font-semibold text-clinical-900">{item.name}</p>
+                  <p className="mt-1 text-xs text-clinical-400">{item.category} · {item.id}</p>
+                </td>
+                <td className="px-4 py-5 align-top">
+                  <p className="text-lg font-bold leading-none text-clinical-900">
+                    {item.quantity} <span className="text-sm font-normal text-clinical-400">/ {item.max}</span>
+                  </p>
+                  <p className="mt-2 text-xs text-clinical-400">{item.unit}</p>
+                </td>
+                <td className="px-4 py-5 align-top">
+                  <ExpiryCell item={item} />
+                </td>
+                <td className="px-4 py-5 align-top">
+                  <StatusBadge status={item.stock} />
+                </td>
+                <td className="px-4 py-5 align-top">
+                  <SystemAction
+                    item={item}
+                    onManage={() => setBatchItem(item)}
+                    onAcknowledge={() => item.activeAlert && acknowledgeAlert(item.activeAlert.id)}
+                  />
+                </td>
+                <td className={`sticky right-0 bg-white px-3 py-5 align-top transition group-hover:bg-clinical-50 ${menuId === item.id ? 'z-40' : 'z-10'}`}>
+                  <div className="relative" data-inventory-menu>
+                    <button
+                      onClick={() => setMenuId(menuId === item.id ? null : item.id)}
+                      aria-label={`Actions for ${item.name}`}
+                      className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800"
+                    >
+                      <IconMore className="h-5 w-5" />
+                    </button>
+                    {menuId === item.id && (
+                      <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
+                        <button
+                          onClick={() => { setItemDrawer({ kind: 'view', item }); setMenuId(null); }}
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
+                        >
+                          <IconSettings className="h-4 w-4 shrink-0 text-clinical-500" />
+                          View Details
+                        </button>
+                        <button
+                          onClick={() => { setItemDrawer({ kind: 'edit', item }); setMenuId(null); }}
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
+                        >
+                          <IconPencil className="h-4 w-4 shrink-0 text-clinical-500" />
+                          Edit Configuration
+                        </button>
+                        <button
+                          onClick={() => { setBatchItem(item); setMenuId(null); }}
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
+                        >
+                          <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" />
+                          Manage Batches
+                        </button>
+                        <div className="my-1 border-t border-clinical-100" />
+                        <button
+                          onClick={() => { setDeleteTarget(item); setMenuId(null); }}
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-alert-700 hover:bg-alert-50"
+                        >
+                          <IconTrash className="h-4 w-4 shrink-0 text-alert-500" />
+                          Delete Item
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {visibleItems.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-6 py-16 text-center">
+                  <IconSearch className="mx-auto h-6 w-6 text-clinical-300" />
+                  <p className="mt-3 text-sm font-medium text-clinical-700">No inventory items found</p>
+                  <p className="mt-1 text-xs text-clinical-400">Try another search or filter.</p>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        <div className="flex items-center justify-between border-t border-clinical-100 px-5 py-3">
+          <p className="text-xs text-clinical-400">
+            {inventoryAlertLog.filter(a => !a.acknowledged).length} open alert{inventoryAlertLog.filter(a => !a.acknowledged).length === 1 ? '' : 's'} across inventory
+          </p>
+          <div className="flex items-center gap-3 text-xs text-clinical-500">
+            <button
+              onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
+              disabled={currentPage === 1}
+              aria-label="Previous page"
+              className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
+            >
+              <IconChevronRight className="h-4 w-4 rotate-180" />
+            </button>
+            <span>{rangeStart}-{rangeEnd} of {filteredItems.length}</span>
+            <button
+              onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
+              disabled={currentPage === totalPages}
+              aria-label="Next page"
+              className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
+            >
+              <IconChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {itemDrawer && (
+        <ItemDrawer
+          item={itemDrawer.kind === 'new' ? undefined : itemDrawer.item}
+          initialMode={itemDrawer.kind === 'edit' || itemDrawer.kind === 'new' ? 'edit' : 'view'}
+          onSave={saveInventoryItem}
+          onClose={() => setItemDrawer(null)}
+        />
+      )}
+
+      {batchItem && <BatchDrawer item={batchItem} onClose={() => setBatchItem(null)} />}
+
+      {deleteTarget && (
+        <DeleteItemConfirm
+          item={deleteTarget}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            removeInventoryItem(deleteTarget.id);
+            setDeleteTarget(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
