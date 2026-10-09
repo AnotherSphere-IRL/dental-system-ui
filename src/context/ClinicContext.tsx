@@ -69,13 +69,6 @@ export interface SupplyOrder {
   confirmedAt?: string;
   receivedAt?: string;
   unitCost: number;
-  /**
-   * Epoch ms when the order entered the queue. Used by the dispatcher to
-   * decide whether a queued order belongs to today's end-of-day batch or
-   * must wait for the next one. Orders created before this field existed
-   * (seed data) leave it undefined and are treated as "old" — dispatchable
-   * as soon as the EOD hour has passed.
-   */
   queuedAtMs?: number;
 }
 
@@ -233,6 +226,7 @@ export type InventoryAuditAction =
 
 export interface InventoryAuditEntry {
   id: string;
+  ts: number;
   timestamp: string;
   actor: 'system' | 'doctor';
   action: InventoryAuditAction;
@@ -257,10 +251,12 @@ export type OrderTimelineKind =
   | 'dispatched'
   | 'reply-parsed'
   | 'classified'
+  | 'reclassified'
   | 'rerouted'
   | 'timeout'
   | 'escalated'
   | 'received'
+  | 'cancelled'
   | 'document';
 
 export interface OrderTimelineEvent {
@@ -294,14 +290,12 @@ export type DemoTrigger =
   | 'simulate-no-response'
   | 'simulate-email-bounce';
 
-/** Severity ordering used by M18 to resolve overlapping alerts (highest wins). */
 const SEVERITY_RANK: Record<'critical' | 'low' | 'overstock', number> = {
   critical: 3,
   low: 2,
   overstock: 1,
 };
 
-/** Retain the most recent audit entries; older entries are trimmed to keep memory bounded. */
 const MAX_AUDIT_ENTRIES = 500;
 
 // ── Seed Data ─────────────────────────────────────────────────
@@ -338,6 +332,79 @@ const SEED_ORDERS: SupplyOrder[] = [
   { id: 'ORD-004', poRef: 'PO-2026-043R1', itemId: 'I05', itemName: 'Dental Cement', qty: 6, unit: 'pack', supplierId: 'S04', unitCost: 390, status: 'sent', originalOrderId: 'ORD-003', createdAt: subtractDays(today, 2), updatedAt: subtractDays(today, 2) },
   { id: 'ORD-005', poRef: 'PO-2026-044', itemId: 'I06', itemName: 'Rubber Dam (pack)', qty: 5, unit: 'pack', supplierId: 'S03', unitCost: 290, status: 'queued', createdAt: subtractDays(today, 0), updatedAt: subtractDays(today, 0) },
   { id: 'ORD-006', poRef: 'PO-2026-040', itemId: 'I02', itemName: 'Composite Resin A3', qty: 8, unit: 'syringe', supplierId: 'S01', unitCost: 420, status: 'completed', supplierResponse: 'Noted po. Will deliver tomorrow.', responseClass: 'confirmed', createdAt: subtractDays(today, 7), updatedAt: subtractDays(today, 5), confirmedAt: subtractDays(today, 6), receivedAt: subtractDays(today, 5) },
+];
+
+const msAgo = (days: number, hours = 0) => Date.now() - days * 86400000 - hours * 3600000;
+const fmtTs = (ms: number) =>
+  new Date(ms).toLocaleString('en-PH', { hour12: false }).slice(0, 16);
+
+const SEED_ORDER_TIMELINE: OrderTimelineEvent[] = [
+  { id: 'TL-001-a', orderId: 'ORD-001', ts: msAgo(2, 4), timestamp: fmtTs(msAgo(2, 4)),
+    kind: 'created', actor: 'system', title: 'Auto-drafted critical order',
+    detail: 'Stock at 3 syringe (threshold 2). Drafted PO for 10 syringe.' },
+  { id: 'TL-001-b', orderId: 'ORD-001', ts: msAgo(2, 3), timestamp: fmtTs(msAgo(2, 3)),
+    kind: 'dispatched', actor: 'system', title: 'PO dispatched via SMTP email (simulated)',
+    detail: 'PDF PO emailed to GC Dental Supply Co. (orders@gcdental.ph). Awaiting response.' },
+  { id: 'TL-001-c', orderId: 'ORD-001', ts: msAgo(1, 2), timestamp: fmtTs(msAgo(1, 2)),
+    kind: 'reply-parsed', actor: 'supplier', title: 'System parsed email (Keyword Match - confirmed)',
+    detail: 'Matched keyword in supplier reply from GC Dental Supply Co.',
+    emailSnippet: { sender: 'orders@gcdental.ph', before: '', keyword: 'Confirmed', after: '. Order received. We will process this.' } },
+  { id: 'TL-001-d', orderId: 'ORD-001', ts: msAgo(1, 1), timestamp: fmtTs(msAgo(1, 1)),
+    kind: 'classified', actor: 'system', title: 'Status - Being Delivered',
+    detail: 'Awaiting physical arrival. Doctor will confirm receipt.' },
+
+  { id: 'TL-002-a', orderId: 'ORD-002', ts: msAgo(1, 6), timestamp: fmtTs(msAgo(1, 6)),
+    kind: 'created', actor: 'system', title: 'Auto-drafted critical order',
+    detail: 'Stock at 0 bottle (threshold 1). Drafted PO for 4 bottle.' },
+  { id: 'TL-002-b', orderId: 'ORD-002', ts: msAgo(1, 5), timestamp: fmtTs(msAgo(1, 5)),
+    kind: 'dispatched', actor: 'system', title: 'PO dispatched via SMTP email (simulated)',
+    detail: 'PDF PO emailed to GC Dental Supply Co. (orders@gcdental.ph). Awaiting response.' },
+  { id: 'TL-002-c', orderId: 'ORD-002', ts: msAgo(0, 3), timestamp: fmtTs(msAgo(0, 3)),
+    kind: 'reply-parsed', actor: 'supplier', title: 'System parsed email (Unclear)',
+    detail: 'No matching keyword. Routed to doctor for classification.',
+    emailSnippet: { sender: 'orders@gcdental.ph', before: 'Hi, do you need the 5ml or 7ml version? We have both in ', keyword: 'stock', after: '.' } },
+
+  { id: 'TL-003-a', orderId: 'ORD-003', ts: msAgo(3, 5), timestamp: fmtTs(msAgo(3, 5)),
+    kind: 'created', actor: 'system', title: 'Auto-drafted low order',
+    detail: 'Stock at 2 pack (threshold 3). Drafted PO for 6 pack.' },
+  { id: 'TL-003-b', orderId: 'ORD-003', ts: msAgo(3, 4), timestamp: fmtTs(msAgo(3, 4)),
+    kind: 'dispatched', actor: 'system', title: 'PO dispatched via SMTP email (simulated)',
+    detail: 'PDF PO emailed to MedDent Philippines (supply@meddent.ph). Awaiting response.' },
+  { id: 'TL-003-c', orderId: 'ORD-003', ts: msAgo(2, 8), timestamp: fmtTs(msAgo(2, 8)),
+    kind: 'reply-parsed', actor: 'supplier', title: 'System parsed email (Keyword Match - unavailable)',
+    detail: 'Matched keyword in supplier reply from MedDent Philippines.',
+    emailSnippet: { sender: 'supply@meddent.ph', before: '', keyword: 'Out of stock', after: '. Cannot fulfill.' } },
+  { id: 'TL-003-d', orderId: 'ORD-003', ts: msAgo(2, 7), timestamp: fmtTs(msAgo(2, 7)),
+    kind: 'rerouted', actor: 'system', title: 'Rerouted to backup supplier',
+    detail: 'Supplier unavailable - auto-rerouted to DentaCore Backup PH.' },
+
+  { id: 'TL-004-a', orderId: 'ORD-004', ts: msAgo(2, 7), timestamp: fmtTs(msAgo(2, 7)),
+    kind: 'created', actor: 'system', title: 'Backup order created',
+    detail: 'Rerouted from PO-2026-043. Queued for dispatch.' },
+  { id: 'TL-004-b', orderId: 'ORD-004', ts: msAgo(2, 6), timestamp: fmtTs(msAgo(2, 6)),
+    kind: 'dispatched', actor: 'system', title: 'PO dispatched via SMTP email (simulated)',
+    detail: 'PDF PO emailed to DentaCore Backup PH (backup@dentacore.ph). Awaiting response.' },
+
+  { id: 'TL-005-a', orderId: 'ORD-005', ts: msAgo(0, 2), timestamp: fmtTs(msAgo(0, 2)),
+    kind: 'created', actor: 'system', title: 'Auto-drafted low order',
+    detail: 'Stock at 1 pack (threshold 3). Drafted PO for 5 pack.' },
+
+  { id: 'TL-006-a', orderId: 'ORD-006', ts: msAgo(7, 4), timestamp: fmtTs(msAgo(7, 4)),
+    kind: 'created', actor: 'system', title: 'Auto-drafted low order',
+    detail: 'Stock at 4 syringe (threshold 5). Drafted PO for 8 syringe.' },
+  { id: 'TL-006-b', orderId: 'ORD-006', ts: msAgo(7, 3), timestamp: fmtTs(msAgo(7, 3)),
+    kind: 'dispatched', actor: 'system', title: 'PO dispatched via SMTP email (simulated)',
+    detail: 'PDF PO emailed to GC Dental Supply Co. (orders@gcdental.ph). Awaiting response.' },
+  { id: 'TL-006-c', orderId: 'ORD-006', ts: msAgo(6, 5), timestamp: fmtTs(msAgo(6, 5)),
+    kind: 'reply-parsed', actor: 'supplier', title: 'System parsed email (Keyword Match - confirmed)',
+    detail: 'Matched keyword in supplier reply from GC Dental Supply Co.',
+    emailSnippet: { sender: 'orders@gcdental.ph', before: '', keyword: 'Noted po', after: '. Will deliver tomorrow.' } },
+  { id: 'TL-006-d', orderId: 'ORD-006', ts: msAgo(6, 4), timestamp: fmtTs(msAgo(6, 4)),
+    kind: 'classified', actor: 'system', title: 'Status - Being Delivered',
+    detail: 'Awaiting physical arrival. Doctor will confirm receipt.' },
+  { id: 'TL-006-e', orderId: 'ORD-006', ts: msAgo(5, 3), timestamp: fmtTs(msAgo(5, 3)),
+    kind: 'received', actor: 'doctor', title: 'Physical receipt confirmed',
+    detail: '8 units added to inventory. Order completed.' },
 ];
 
 const SEED_DEDUCTIONS: DeductionEntry[] = [
@@ -424,7 +491,7 @@ interface ClinicContextValue {
   isExpired: (expiry: string) => boolean;
   orders: SupplyOrder[];
   confirmReceived: (orderId: string) => void;
-  classifyResponse: (orderId: string, cls: ResponseClass) => void;
+  classifyResponse: (orderId: string, cls: ResponseClass, isOverride?: boolean, reason?: string) => void;
   cancelOrder: (orderId: string) => void;
   suppliers: Supplier[];
   inventoryAlertLog: InventoryAlertLog[];
@@ -441,8 +508,7 @@ interface ClinicContextValue {
   saveInventoryItem: (item: InventoryItem) => void;
   removeInventoryItem: (itemId: string) => void;
   discardBatch: (itemId: string, batchNo: string) => void;
-  /** Opens the purchase order in a new print window so the doctor can Save-as-PDF. */
-  printPurchaseOrder: (orderId: string) => void;
+  logPurchaseOrderPrint: (orderId: string) => void;
 }
 
 const ClinicContext = createContext<ClinicContextValue | null>(null);
@@ -464,7 +530,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
   const [inventoryAuditLog, setInventoryAuditLog] = useState<InventoryAuditEntry[]>([]);
   const [overstockReviewNotes, setOverstockReviewNotes] = useState<OverstockReviewNote[]>([]);
   const [orderDispatchLog, setOrderDispatchLog] = useState<OrderDispatchLog[]>([]);
-  const [orderTimeline, setOrderTimeline] = useState<OrderTimelineEvent[]>([]);
+  const [orderTimeline, setOrderTimeline] = useState<OrderTimelineEvent[]>(SEED_ORDER_TIMELINE);
   const [automationConfig, setAutomationConfig] = useState<AutomationConfig>({
     eodDispatchHour: 18,
     criticalImmediate: true,
@@ -499,6 +565,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     setInventoryAuditLog(prev => {
       const entry: InventoryAuditEntry = {
         id: `IA-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ts: Date.now(),
         timestamp: timestampNow(),
         actor,
         action,
@@ -841,15 +908,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       `Rerouted from ${target.poRef}. Queued for dispatch.`);
   };
 
-  /**
-   * Dispatch queued orders through the SMTP-style pipeline.
-   *
-   * In this demo the "send" is simulated — we don't have a real SMTP relay
-   * (SendGrid / Amazon SES) wired up, so the system logs a synthetic message
-   * id to `orderDispatchLog` and flips each order to `sent`. A production
-   * deployment would swap the log entries for real API calls here, keeping
-   * the surrounding status transition and handoff to M22 unchanged.
-   */
   const dispatchOrders = (orderIds: string[]) => {
     const targets = orders.filter(o => orderIds.includes(o.id) && o.status === 'queued');
     if (targets.length === 0) return;
@@ -1011,29 +1069,96 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     );
   };
 
-  const classifyResponse = (orderId: string, cls: ResponseClass) => {
+  /**
+   * Doctor classifies (or overrides) an order's response classification.
+   *
+   * @param orderId     — target order
+   * @param cls         — the classification the doctor is applying
+   * @param isOverride  — true when reclassifying an already-classified order
+   *                      (doc §15: "Allow the doctor to override classification
+   *                      manually at any time, with an audit log entry")
+   * @param reason      — optional free-text reason, recorded in the audit entry
+   *
+   * Side effects when `isOverride` is true and the classification changes to
+   * `Confirmed` on a rerouted parent: any still-active child order in a
+   * pre-delivery state is cancelled, since the doctor has decided the
+   * original supplier is going to deliver after all.
+   *
+   * A same-state override (e.g. Confirmed → Confirmed) is a no-op and is
+   * skipped entirely — the timeline stays clean, and no reroute chain is
+   * accidentally re-triggered by a duplicate click.
+   */
+  const classifyResponse = (
+    orderId: string,
+    cls: ResponseClass,
+    isOverride = false,
+    reason?: string,
+  ) => {
     const dateStr = now.toISOString().slice(0, 10);
-    setOrders(prev => {
-      const target = prev.find(o => o.id === orderId);
-      if (!target) return prev;
-      if (cls === 'confirmed') {
-        return prev.map(o => o.id === orderId
-          ? { ...o, responseClass: cls, status: 'being_delivered' as OrderStatus, confirmedAt: dateStr, updatedAt: dateStr }
-          : o
-        );
+    const target = orders.find(o => o.id === orderId);
+    if (!target) return;
+
+    const clsLabel = cls === 'confirmed' ? 'Confirmed'
+      : cls === 'unavailable' ? 'Unavailable'
+      : cls === 'no_response' ? 'No Response'
+      : 'Unclear';
+
+    // Same-state override = no-op. Skip the state change and skip the audit
+    // entry, otherwise the timeline fills with "reclassified" rows that
+    // reflect nothing (and re-fire reroute chains in the unavailable /
+    // no_response cases).
+    if (isOverride && target.responseClass === cls) return;
+
+    // If the doctor is overriding a rerouted parent back to Confirmed, cancel
+    // any still-pending child so we don't double-order the same stock.
+    if (isOverride && cls === 'confirmed' && target.linkedOrderId) {
+      const child = orders.find(o => o.id === target.linkedOrderId);
+      if (child && ['queued', 'sent'].includes(child.status)) {
+        setOrders(prev => prev.map(o => o.id === child.id
+          ? { ...o, status: 'cancelled' as OrderStatus, updatedAt: dateStr }
+          : o));
+        appendTimeline(child.id, 'cancelled', 'system', 'Backup order cancelled',
+          `Parent ${target.poRef} reclassified to Confirmed. Backup no longer needed.`);
       }
-      if (cls === 'unavailable') {
-        queueMicrotask(() => rerouteOrder(orderId, 'unavailable'));
-        return prev.map(o => o.id === orderId ? { ...o, responseClass: cls, updatedAt: dateStr } : o);
-      }
-      return prev.map(o => o.id === orderId ? { ...o, responseClass: cls, status: 'unclear' as OrderStatus, updatedAt: dateStr } : o);
-    });
+    }
+
+    // Apply the state change
+    if (cls === 'confirmed') {
+      setOrders(prev => prev.map(o => o.id === orderId
+        ? { ...o, responseClass: cls, status: 'being_delivered' as OrderStatus, confirmedAt: dateStr, updatedAt: dateStr }
+        : o));
+    } else if (cls === 'unavailable') {
+      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, responseClass: cls, updatedAt: dateStr } : o));
+      queueMicrotask(() => rerouteOrder(orderId, 'unavailable'));
+    } else if (cls === 'no_response') {
+      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, responseClass: cls, updatedAt: dateStr } : o));
+      queueMicrotask(() => rerouteOrder(orderId, 'no_response'));
+    } else {
+      setOrders(prev => prev.map(o => o.id === orderId
+        ? { ...o, responseClass: cls, status: 'unclear' as OrderStatus, updatedAt: dateStr }
+        : o));
+    }
+
+    // Audit trail entry
+    const title = isOverride
+      ? `Doctor reclassified response as "${clsLabel}"`
+      : `Doctor classified response as "${clsLabel}"`;
+    const baseDetail = isOverride
+      ? `Overrode previous classification. Following the ${clsLabel.toLowerCase()} path.`
+      : `Following the ${clsLabel.toLowerCase()} path.`;
+    const detail = reason ? `${baseDetail} Reason: ${reason}` : baseDetail;
+    appendTimeline(orderId, isOverride ? 'reclassified' : 'classified', 'doctor', title, detail);
   };
 
   const cancelOrder = (orderId: string) => {
+    const target = orders.find(o => o.id === orderId);
+    if (!target) return;
+    const ts = timestampNow();
     setOrders(prev => prev.map(o =>
-      o.id === orderId ? { ...o, status: 'cancelled', updatedAt: now.toISOString().slice(0, 10) } : o
+      o.id === orderId ? { ...o, status: 'cancelled', updatedAt: ts } : o
     ));
+    appendTimeline(orderId, 'cancelled', 'doctor', 'Order cancelled by doctor',
+      `${target.poRef} closed as cancelled after manual review.`);
   };
 
   const confirmReceived = (orderId: string) => {
@@ -1126,150 +1251,13 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  /**
-   * Open the purchase order in a dedicated print view. Browsers expose a
-   * "Save as PDF" destination in the print dialog, which produces a genuine
-   * PDF without pulling in a client-side PDF library (KISS-friendly).
-   */
-  const printPurchaseOrder = (orderId: string) => {
+  const logPurchaseOrderPrint = (orderId: string) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
-    const supplier = suppliers.find(s => s.id === order.supplierId);
-    const subtotal = order.qty * order.unitCost;
-
-    const html = `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>${order.poRef}</title>
-<style>
-  * { box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    color: #1e293b;
-    max-width: 720px;
-    margin: 40px auto;
-    padding: 0 32px;
-    line-height: 1.5;
-  }
-  .header { text-align: center; border-bottom: 2px solid #0e7490; padding-bottom: 16px; margin-bottom: 28px; }
-  .header h1 { margin: 0 0 6px 0; font-size: 22px; letter-spacing: 3px; color: #0e7490; }
-  .header p { margin: 2px 0; font-size: 13px; color: #64748b; }
-  .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-bottom: 28px; }
-  .meta h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin: 0 0 10px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-  .meta dl { margin: 0; font-size: 13px; }
-  .meta dt { color: #64748b; font-size: 11px; margin-top: 8px; }
-  .meta dd { margin: 2px 0 0 0; color: #1e293b; font-weight: 500; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 13px; }
-  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #e2e8f0; padding: 10px 8px; }
-  td { border-bottom: 1px solid #e2e8f0; padding: 12px 8px; }
-  td.num, th.num { text-align: right; }
-  tfoot td { border-bottom: none; border-top: 2px solid #0e7490; font-weight: 600; font-size: 14px; padding-top: 14px; }
-  tfoot td.num { color: #0e7490; }
-  .footer { margin-top: 44px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center; }
-  @media print {
-    body { margin: 0; padding: 24px; max-width: none; }
-    @page { size: A4; margin: 18mm; }
-  }
-</style>
-</head>
-<body>
-  <div class="header">
-    <h1>PURCHASE ORDER</h1>
-    <p><strong>Premier Dental Solutions PH</strong></p>
-    <p>Makati Branch · procurement@premierdental.ph</p>
-  </div>
-
-  <div class="meta">
-    <div>
-      <h2>Order Details</h2>
-      <dl>
-        <dt>PO Reference</dt><dd>${order.poRef}</dd>
-        <dt>Order Date</dt><dd>${order.createdAt}</dd>
-        <dt>Status</dt><dd style="text-transform:capitalize">${order.status.replace('_', ' ')}</dd>
-        ${order.originalOrderId ? `<dt>Rerouted From</dt><dd>${order.originalOrderId}</dd>` : ''}
-      </dl>
-    </div>
-    <div>
-      <h2>Supplier</h2>
-      <dl>
-        <dt>Company</dt><dd>${supplier?.name ?? order.supplierId}</dd>
-        <dt>Contact Person</dt><dd>${supplier?.contactPerson ?? '—'}</dd>
-        <dt>Email</dt><dd>${supplier?.email ?? '—'}</dd>
-        <dt>Phone</dt><dd>${supplier?.phone ?? '—'}</dd>
-        <dt>Payment Terms</dt><dd>${supplier?.paymentTerms ?? '—'}</dd>
-        <dt>Lead Time</dt><dd>${supplier?.leadTimeDays ?? '—'} days</dd>
-      </dl>
-    </div>
-  </div>
-
-  <table>
-    <thead>
-      <tr>
-        <th>Item</th>
-        <th>SKU</th>
-        <th class="num">Quantity</th>
-        <th class="num">Unit Cost</th>
-        <th class="num">Subtotal</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>${order.itemName}</td>
-        <td>${order.itemId}</td>
-        <td class="num">${order.qty} ${order.unit}</td>
-        <td class="num">₱${order.unitCost.toLocaleString()}</td>
-        <td class="num">₱${subtotal.toLocaleString()}</td>
-      </tr>
-    </tbody>
-    <tfoot>
-      <tr>
-        <td colspan="4">Total Amount</td>
-        <td class="num">₱${subtotal.toLocaleString()}</td>
-      </tr>
-    </tfoot>
-  </table>
-
-  <div class="footer">
-    Auto-generated by Premier Dental Solutions PH — Supply Ordering module.<br />
-    For inquiries, contact procurement@premierdental.ph.
-  </div>
-
-  <script>
-    // Give the browser a frame to paint before opening the print dialog.
-    setTimeout(function () { window.print(); }, 250);
-  </script>
-</body>
-</html>`;
-
-    const printWindow = window.open('', '_blank', 'width=880,height=960');
-    if (!printWindow) {
-      // Popup blocked — fall back to opening the same HTML as a blob URL.
-      const blob = new Blob([html], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    } else {
-      printWindow.document.open();
-      printWindow.document.write(html);
-      printWindow.document.close();
-    }
-
-    appendTimeline(orderId, 'document', 'system', 'Purchase Order opened for PDF export',
-      `${order.poRef} opened in print view. Choose "Save as PDF" in the browser dialog.`);
+    appendTimeline(orderId, 'document', 'doctor', 'Purchase Order printed or exported',
+      `${order.poRef} sent to printer or saved as PDF.`);
   };
 
-  // ── Refs mirroring state read by the M18 watcher ─────────────
-  //
-  // The M18 watcher effect is triggered by `inventory` changes only, but
-  // reads `inventoryAlertLog` and `orders` to decide whether an alert or
-  // an order already exists for a given item. Reading those directly from
-  // the effect closure risks stale values when the effect fires before a
-  // pending state update has flushed — which can produce duplicate alerts
-  // and duplicate auto-drafted POs. We mirror them into refs updated by
-  // dedicated sync effects declared BEFORE the watcher, so React runs the
-  // sync effects first on every commit and the watcher always sees the
-  // latest values without needing those states in its dependency array.
   const inventoryAlertLogRef = useRef(inventoryAlertLog);
   const ordersRef = useRef(orders);
 
@@ -1296,6 +1284,10 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     const newTimeline: OrderTimelineEvent[] = [];
     const newAudit: InventoryAuditEntry[] = [];
     const resolvedItemIds: string[] = [];
+    // Alerts for the same item at a lower severity that get superseded when
+    // a higher-severity alert fires in this pass. Marked auto-resolved in
+    // the state flush below, per the doc's "highest severity wins" rule.
+    const supersededAlertIds: string[] = [];
     const ts = timestampNow();
     const nowMs = Date.now();
 
@@ -1303,19 +1295,32 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       const status = getStockStatus(item);
       if (status === 'ok') { resolvedItemIds.push(item.id); return; }
 
-      // "Highest severity wins" — skip if an unacknowledged alert of equal
-      // or higher severity already covers this item.
       const myRank = SEVERITY_RANK[status];
       const alreadyCovered = inventoryAlertLogRef.current.some(
         a => a.itemId === item.id && !a.acknowledged && SEVERITY_RANK[a.severity] >= myRank,
       );
       if (alreadyCovered) return;
 
-      // Only block auto-drafting when the item has an unresolved order in
-      // the pipeline. Terminal statuses (completed / cancelled) free the
-      // item to draft fresh POs; escalated terminal states (unavailable /
-      // no_response) intentionally hold the item until the doctor resolves
-      // them via Order Monitoring.
+      // "Highest severity wins" — if we get here, there is no unacknowledged
+      // alert at >= severity for this item. Any *lower*-severity alerts that
+      // are still open are now superseded by the alert we're about to raise
+      // and must be auto-resolved so the doctor only sees the highest one.
+      inventoryAlertLogRef.current
+        .filter(a => a.itemId === item.id && !a.acknowledged && SEVERITY_RANK[a.severity] < myRank)
+        .forEach(a => {
+          supersededAlertIds.push(a.id);
+          newAudit.push({
+            id: `IA-${Date.now()}-${a.id}-super`,
+            ts: Date.now(),
+            timestamp: ts,
+            actor: 'system',
+            action: 'alert-auto-resolved',
+            itemId: item.id,
+            itemName: item.name,
+            detail: `Superseded by higher-severity ${status} alert`,
+          });
+        });
+
       const hasUnresolvedOrder = ordersRef.current.some(
         o => o.itemId === item.id && !['completed', 'cancelled'].includes(o.status),
       );
@@ -1325,8 +1330,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
         const alertId = `ALRT-${Date.now()}-${item.id}`;
         const noteId = `OSN-${Date.now()}-${item.id}`;
 
-        // M18 × M19: check the item's batches so the review note reflects
-        // any expiry risk on top of the overstock condition.
         let expiringQty = 0;
         let expiredQty = 0;
         let earliestExpiryDays: number | null = null;
@@ -1379,6 +1382,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
         });
         newAudit.push({
           id: `IA-${Date.now()}-${item.id}-over`,
+          ts: Date.now(),
           timestamp: ts,
           actor: 'system',
           action: 'alert-fired',
@@ -1431,6 +1435,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       });
       newAudit.push({
         id: `IA-${Date.now()}-${item.id}-fire`,
+        ts: Date.now(),
         timestamp: ts,
         actor: 'system',
         action: 'alert-fired',
@@ -1440,14 +1445,13 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       });
     });
 
-    // Auto-resolve audit entries — one per item that had unacknowledged
-    // alerts and has now returned to 'ok'.
     inventory.forEach(item => {
       if (!resolvedItemIds.includes(item.id)) return;
       const hadUnack = inventoryAlertLogRef.current.some(a => a.itemId === item.id && !a.acknowledged);
       if (!hadUnack) return;
       newAudit.push({
         id: `IA-${Date.now()}-${item.id}-auto`,
+        ts: Date.now(),
         timestamp: ts,
         actor: 'system',
         action: 'alert-auto-resolved',
@@ -1458,6 +1462,13 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     });
 
     if (newAlerts.length) setInventoryAlertLog(prev => [...newAlerts, ...prev]);
+    if (supersededAlertIds.length) {
+      setInventoryAlertLog(prev => prev.map(a =>
+        supersededAlertIds.includes(a.id) && !a.acknowledged
+          ? { ...a, acknowledged: true, acknowledgedAt: ts, acknowledgedBy: 'system' }
+          : a,
+      ));
+    }
     if (newOrders.length) setOrders(prev => [...prev, ...newOrders]);
     if (newNotes.length) setOverstockReviewNotes(prev => [...newNotes, ...prev]);
     if (newTimeline.length) setOrderTimeline(prev => [...prev, ...newTimeline]);
@@ -1476,16 +1487,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
   }, [inventory]);
 
   // M20 — dispatch scheduler.
-  //
-  // Dispatch rules per the process doc (§4.5):
-  //   • Critical + criticalImmediate → skip the batch, send now.
-  //   • Everything else → batch at the end-of-day hour. An order that
-  //     was queued *after* today's EOD hour (e.g. 19:00 with EOD=18) is
-  //     held until tomorrow's EOD, matching "end-of-day batch" semantics.
-  //
-  // Idempotency: dispatchOrders flips each order queued → sent, so a
-  // subsequent tick won't re-dispatch the same order even if this effect
-  // re-runs. No extra guard set needed.
   useEffect(() => {
     const nowDate = new Date();
     const nowMs = nowDate.getTime();
@@ -1497,8 +1498,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       if (o.status !== 'queued') return false;
       const alert = inventoryAlertLog.find(a => a.linkedOrderId === o.id);
       if (alert?.severity === 'critical' && automationConfig.criticalImmediate) return true;
-      // Batch window: only after today's EOD, and only for orders that
-      // existed before the EOD boundary.
       if (nowMs < todayEodMs) return false;
       if (o.queuedAtMs !== undefined && o.queuedAtMs > todayEodMs) return false;
       return true;
@@ -1542,7 +1541,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       parseSupplierReply,
       automationConfig, setAutomationConfig,
       fireDemoTrigger,
-      saveInventoryItem, removeInventoryItem, discardBatch, printPurchaseOrder,
+      saveInventoryItem, removeInventoryItem, discardBatch, logPurchaseOrderPrint,
     }}>
       {children}
     </ClinicContext.Provider>

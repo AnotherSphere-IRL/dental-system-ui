@@ -7,6 +7,7 @@ import {
   IconExternalLink,
   IconPackage,
   IconPlus,
+  IconPrinter,
   IconSearch,
   IconSettings,
   IconX,
@@ -18,12 +19,14 @@ import {
   type SupplyOrder,
   type InventoryAlertLog,
   type InventoryAuditAction,
+  type OrderTimelineEvent,
 } from '../../context/ClinicContext';
 
 type StockState = 'critical' | 'low' | 'normal' | 'overstock';
 type ExpiryState = 'expired' | 'expiring' | 'fresh' | 'none';
 type Filter = 'expired' | 'all' | 'low' | 'expiring';
 type PrimaryView = 'stock' | 'alerts';
+type DetailTab = 'deductions' | 'activity';
 
 export interface InventoryRow {
   id: string;
@@ -59,6 +62,16 @@ const AUDIT_ACTION_LABELS: Record<InventoryAuditAction, string> = {
   'item-deleted': 'Item deleted',
   'batch-discarded': 'Batch discarded',
 };
+
+interface ActivityEntry {
+  id: string;
+  ts: number;
+  timestamp: string;
+  actor: 'system' | 'doctor' | 'supplier';
+  source: 'inventory' | 'order';
+  action: string;
+  detail: string;
+}
 
 // ── Adapter: context InventoryItem → display InventoryRow ─────
 
@@ -201,6 +214,15 @@ function IconPencil({ className = 'w-4 h-4' }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
       <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" strokeLinecap="round" strokeLinejoin="round" />
       <path d="m14 7 3 3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconMail({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="m3 7 9 6 9-6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -371,39 +393,13 @@ function SystemAction({
 
 type AlertTone = 'alert' | 'warning' | 'info';
 
-const ALERT_TONE_STYLES: Record<AlertTone, {
-  bar: string;
-  title: string;
-  badge: string;
-}> = {
-  alert: {
-    bar: 'border-alert-500',
-    title: 'text-alert-700',
-    badge: 'bg-alert-100 text-alert-800',
-  },
-  warning: {
-    bar: 'border-warning-500',
-    title: 'text-warning-700',
-    badge: 'bg-warning-100 text-warning-800',
-  },
-  info: {
-    bar: 'border-blue-500',
-    title: 'text-blue-700',
-    badge: 'bg-blue-100 text-blue-800',
-  },
+const ALERT_TONE_STYLES: Record<AlertTone, { bar: string; title: string; badge: string }> = {
+  alert:   { bar: 'border-alert-500',   title: 'text-alert-700',   badge: 'bg-alert-100 text-alert-800' },
+  warning: { bar: 'border-warning-500', title: 'text-warning-700', badge: 'bg-warning-100 text-warning-800' },
+  info:    { bar: 'border-blue-500',    title: 'text-blue-700',    badge: 'bg-blue-100 text-blue-800' },
 };
 
-function AlertSummaryTile({
-  label,
-  count,
-  tone,
-  sub,
-}: {
-  label: string;
-  count: number;
-  tone: AlertTone;
-  sub: string;
-}) {
+function AlertSummaryTile({ label, count, tone, sub }: { label: string; count: number; tone: AlertTone; sub: string }) {
   const s = ALERT_TONE_STYLES[tone];
   return (
     <div className="rounded-xl border border-clinical-200 bg-white p-4">
@@ -424,13 +420,7 @@ interface AlertsViewProps {
   onManageBatches: (row: InventoryRow) => void;
 }
 
-function AlertsView({
-  rows,
-  onAcknowledge,
-  onViewOrder,
-  onViewItem,
-  onManageBatches,
-}: AlertsViewProps) {
+function AlertsView({ rows, onAcknowledge, onViewOrder, onViewItem, onManageBatches }: AlertsViewProps) {
   const categoryByItem = new Map<string, 'critical' | 'low' | 'overstock' | 'expiry'>();
   rows.forEach(row => {
     if (row.stock === 'critical') categoryByItem.set(row.id, 'critical');
@@ -470,52 +460,24 @@ function AlertsView({
       </div>
 
       {critical.length > 0 && (
-        <AlertGroup
-          title="Critical Low"
-          tone="alert"
+        <AlertGroup title="Critical Low" tone="alert"
           description="Quantity at or below the critical threshold. Auto-drafted for immediate dispatch."
-          rows={critical}
-          onAcknowledge={onAcknowledge}
-          onViewOrder={onViewOrder}
-          onViewItem={onViewItem}
-          onManageBatches={onManageBatches}
-        />
+          rows={critical} onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
       )}
       {low.length > 0 && (
-        <AlertGroup
-          title="Low / Reorder"
-          tone="warning"
+        <AlertGroup title="Low / Reorder" tone="warning"
           description="Quantity at or below the reorder threshold. Queued for end-of-day dispatch."
-          rows={low}
-          onAcknowledge={onAcknowledge}
-          onViewOrder={onViewOrder}
-          onViewItem={onViewItem}
-          onManageBatches={onManageBatches}
-        />
+          rows={low} onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
       )}
       {overstock.length > 0 && (
-        <AlertGroup
-          title="Overstock"
-          tone="info"
+        <AlertGroup title="Overstock" tone="info"
           description="Quantity above the maximum. Ordering is suppressed — review consumption or adjust the threshold."
-          rows={overstock}
-          onAcknowledge={onAcknowledge}
-          onViewOrder={onViewOrder}
-          onViewItem={onViewItem}
-          onManageBatches={onManageBatches}
-        />
+          rows={overstock} onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
       )}
       {expiry.length > 0 && (
-        <AlertGroup
-          title="Expiring / Expired"
-          tone="warning"
+        <AlertGroup title="Expiring / Expired" tone="warning"
           description="Batches approaching or past their expiration date. Review for use or physical disposal."
-          rows={expiry}
-          onAcknowledge={onAcknowledge}
-          onViewOrder={onViewOrder}
-          onViewItem={onViewItem}
-          onManageBatches={onManageBatches}
-        />
+          rows={expiry} onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
       )}
     </div>
   );
@@ -528,16 +490,7 @@ interface AlertGroupProps extends Omit<AlertsViewProps, 'rows'> {
   rows: InventoryRow[];
 }
 
-function AlertGroup({
-  title,
-  tone,
-  description,
-  rows,
-  onAcknowledge,
-  onViewOrder,
-  onViewItem,
-  onManageBatches,
-}: AlertGroupProps) {
+function AlertGroup({ title, tone, description, rows, onAcknowledge, onViewOrder, onViewItem, onManageBatches }: AlertGroupProps) {
   const s = ALERT_TONE_STYLES[tone];
   return (
     <section>
@@ -548,29 +501,15 @@ function AlertGroup({
       <p className="mb-3 mt-1.5 pl-4 text-[11px] text-clinical-500">{description}</p>
       <div className="space-y-2">
         {rows.map(row => (
-          <AlertRowCard
-            key={row.id}
-            row={row}
-            onAcknowledge={onAcknowledge}
-            onViewOrder={onViewOrder}
-            onViewItem={onViewItem}
-            onManageBatches={onManageBatches}
-          />
+          <AlertRowCard key={row.id} row={row}
+            onAcknowledge={onAcknowledge} onViewOrder={onViewOrder} onViewItem={onViewItem} onManageBatches={onManageBatches} />
         ))}
       </div>
     </section>
   );
 }
 
-function AlertRowCard({
-  row,
-  onAcknowledge,
-  onViewOrder,
-  onViewItem,
-  onManageBatches,
-}: {
-  row: InventoryRow;
-} & Omit<AlertsViewProps, 'rows'>) {
+function AlertRowCard({ row, onAcknowledge, onViewOrder, onViewItem, onManageBatches }: { row: InventoryRow } & Omit<AlertsViewProps, 'rows'>) {
   const primary = (() => {
     if (row.expiry === 'expired' || row.expiry === 'expiring') {
       return { label: 'Review batches', onClick: () => onManageBatches(row) };
@@ -610,16 +549,12 @@ function AlertRowCard({
           <p className="truncate text-sm font-semibold text-clinical-900">{row.name}</p>
           <StatusBadge status={row.stock} />
         </div>
-        <p className="mt-1 text-[11px] text-clinical-400">
-          {row.category} · {row.id}
-        </p>
+        <p className="mt-1 text-[11px] text-clinical-400">{row.category} · {row.id}</p>
         <p className="mt-1.5 truncate text-xs text-clinical-600">{row.systemAction}</p>
         {row.activeAlert && thresholdLabel && (
           <p className="mt-0.5 text-[10px] text-clinical-400">
             {thresholdLabel} threshold:{' '}
-            <span className="font-semibold text-clinical-600">
-              {row.activeAlert.threshold} {row.unit}
-            </span>
+            <span className="font-semibold text-clinical-600">{row.activeAlert.threshold} {row.unit}</span>
           </p>
         )}
         {expiryRisk && (expiryRisk.expiringQty > 0 || expiryRisk.expiredQty > 0) && (
@@ -638,10 +573,7 @@ function AlertRowCard({
         <p className="mt-1 text-[10px] text-clinical-400">{row.unit}</p>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1.5">
-        <button
-          onClick={primary.onClick}
-          className="inline-flex items-center gap-1 text-xs font-semibold text-primary-700 hover:text-primary-900"
-        >
+        <button onClick={primary.onClick} className="inline-flex items-center gap-1 text-xs font-semibold text-primary-700 hover:text-primary-900">
           {primary.label} <IconChevronRight className="h-3 w-3" />
         </button>
         {row.activeAlert && (
@@ -689,12 +621,13 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
 
 const inputClass = 'w-full rounded-lg border border-clinical-200 bg-white px-3 py-2.5 text-sm text-clinical-800 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100';
 
-// ── ItemDetails (read-only view) ──────────────────────────────
+// ── ItemDetails (read-only view with tabbed logs) ─────────────
 
-function ItemDetails({ item }: { item: InventoryRow }) {
-  const { deductionLog, suppliers, inventoryAuditLog } = useClinic();
+function ItemDetails({ item, initialTab = 'deductions' }: { item: InventoryRow; initialTab?: DetailTab }) {
+  const { deductionLog, suppliers, inventoryAuditLog, orderTimeline, orders } = useClinic();
   const [historyRange, setHistoryRange] = useState<7 | 30 | 90>(30);
   const [procedureFilter, setProcedureFilter] = useState<string>('all');
+  const [activeTab, setActiveTab] = useState<DetailTab>(initialTab);
 
   const usageEntries = useMemo(() => {
     const cutoff = new Date();
@@ -720,10 +653,35 @@ function ItemDetails({ item }: { item: InventoryRow }) {
 
   const totalUsed = usageEntries.reduce((total, entry) => total + entry.qty, 0);
 
-  const auditEntries = useMemo(
-    () => inventoryAuditLog.filter(e => e.itemId === item.id).slice(0, 15),
-    [inventoryAuditLog, item.id],
-  );
+  // ── Activity entries — merge inventory audit + order timeline ──
+  const activityEntries = useMemo<ActivityEntry[]>(() => {
+    const invEntries: ActivityEntry[] = inventoryAuditLog
+      .filter(e => e.itemId === item.id)
+      .map(e => ({
+        id: e.id,
+        ts: e.ts,
+        timestamp: e.timestamp,
+        actor: e.actor,
+        source: 'inventory',
+        action: AUDIT_ACTION_LABELS[e.action],
+        detail: e.detail,
+      }));
+
+    const itemOrderIds = new Set(orders.filter(o => o.itemId === item.id).map(o => o.id));
+    const ordEntries: ActivityEntry[] = orderTimeline
+      .filter(e => itemOrderIds.has(e.orderId))
+      .map(e => ({
+        id: e.id,
+        ts: e.ts,
+        timestamp: e.timestamp,
+        actor: e.actor,
+        source: 'order',
+        action: e.title,
+        detail: e.detail,
+      }));
+
+    return [...invEntries, ...ordEntries].sort((a, b) => b.ts - a.ts);
+  }, [inventoryAuditLog, orderTimeline, orders, item.id]);
 
   const primarySupplier = suppliers.find(s => s.id === item.sourceItem.supplierId);
   const backupSuppliers = item.sourceItem.backupSupplierIds
@@ -738,6 +696,7 @@ function ItemDetails({ item }: { item: InventoryRow }) {
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-6">
+      {/* Section 1 — Live stock + thresholds */}
       <section className="border-b border-clinical-200 pb-7">
         <p className="mb-5 font-semibold text-clinical-900">Stock &amp; thresholds</p>
 
@@ -762,6 +721,7 @@ function ItemDetails({ item }: { item: InventoryRow }) {
         </dl>
       </section>
 
+      {/* Section 2 — Supplier routing */}
       <section className="border-b border-clinical-200 py-7">
         <p className="mb-4 font-semibold text-clinical-900">Supplier routing</p>
         <dl className="grid grid-cols-1 gap-3 text-sm">
@@ -785,132 +745,207 @@ function ItemDetails({ item }: { item: InventoryRow }) {
         </dl>
       </section>
 
-      <section className="border-b border-clinical-200 py-7">
-        <p className="mb-4 font-semibold text-clinical-900">Deduction history</p>
-
-        <div className="flex items-end justify-between">
-          <p className="text-xs text-clinical-400">Recorded procedure deductions</p>
-          <div className="text-right">
-            <p className="text-lg font-bold leading-none text-clinical-900">{totalUsed}</p>
-            <p className="text-[11px] text-clinical-400">{item.unit} used</p>
-          </div>
-        </div>
-
-        <div className="mt-4 inline-flex rounded-lg border border-clinical-200 bg-white p-0.5">
-          {([7, 30, 90] as const).map(range => (
-            <button
-              key={range}
-              type="button"
-              onClick={() => setHistoryRange(range)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                historyRange === range
-                  ? 'bg-clinical-800 text-white'
-                  : 'text-clinical-500 hover:bg-clinical-50 hover:text-clinical-800'
-              }`}
-            >
-              {range} days
-            </button>
-          ))}
-        </div>
-
-        {procedureBreakdown.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            <button
-              type="button"
-              onClick={() => setProcedureFilter('all')}
-              className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
-                procedureFilter === 'all'
-                  ? 'border-primary-300 bg-primary-50 text-primary-700'
-                  : 'border-clinical-200 bg-white text-clinical-600 hover:border-primary-300'
-              }`}
-            >
-              All procedures
-            </button>
-            {procedureBreakdown.map(({ procedure, qty }) => (
-              <button
-                key={procedure}
-                type="button"
-                onClick={() => setProcedureFilter(procedure)}
-                className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
-                  procedureFilter === procedure
-                    ? 'border-primary-300 bg-primary-50 text-primary-700'
-                    : 'border-clinical-200 bg-white text-clinical-600 hover:border-primary-300'
-                }`}
-              >
-                {procedure} <span className="ml-1 opacity-60">{qty}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {filteredEntries.length > 0 ? (
-          <div className="mt-4 divide-y divide-clinical-100 rounded-xl border border-clinical-200">
-            {filteredEntries.slice(0, 20).map(entry => (
-              <div key={entry.id} className="flex items-start justify-between gap-4 px-4 py-3">
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-clinical-700">{entry.procedure}</p>
-                  <p className="mt-1 truncate text-[11px] text-clinical-400">
-                    {entry.performedBy} · Patient {entry.patientId}
-                  </p>
-                </div>
-                <div className="shrink-0 text-right">
-                  <p className="text-xs font-semibold text-clinical-700">-{entry.qty} {item.unit}</p>
-                  <p className="mt-1 text-[11px] text-clinical-400">
-                    {new Date(entry.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="mt-4 rounded-xl border border-dashed border-clinical-200 px-4 py-8 text-center">
-            <IconClock className="mx-auto h-5 w-5 text-clinical-300" />
-            <p className="mt-2 text-xs font-medium text-clinical-600">
-              {procedureFilter === 'all' ? 'No consumption recorded in this period' : 'No deductions for this procedure'}
-            </p>
-          </div>
-        )}
-      </section>
-
-      {/* Activity log — audit trail for this item */}
+      {/* Section 3 — Tabbed logs */}
       <section className="pt-7">
-        <div className="flex items-end justify-between">
-          <p className="font-semibold text-clinical-900">Activity log</p>
-          {auditEntries.length > 0 && (
-            <span className="text-[10px] text-clinical-400">{auditEntries.length} entr{auditEntries.length === 1 ? 'y' : 'ies'}</span>
-          )}
+        <div className="mb-5 flex gap-0.5 border-b border-clinical-200">
+          <button
+            type="button"
+            onClick={() => setActiveTab('deductions')}
+            className={`-mb-px border-b-2 px-3.5 py-2.5 text-xs font-semibold transition ${
+              activeTab === 'deductions'
+                ? 'border-primary-600 text-primary-700'
+                : 'border-transparent text-clinical-500 hover:text-clinical-700'
+            }`}
+          >
+            Deduction History
+            <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+              activeTab === 'deductions' ? 'bg-primary-100 text-primary-700' : 'bg-clinical-100 text-clinical-500'
+            }`}>
+              {usageEntries.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('activity')}
+            className={`-mb-px border-b-2 px-3.5 py-2.5 text-xs font-semibold transition ${
+              activeTab === 'activity'
+                ? 'border-primary-600 text-primary-700'
+                : 'border-transparent text-clinical-500 hover:text-clinical-700'
+            }`}
+          >
+            Activity Log
+            <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+              activeTab === 'activity' ? 'bg-primary-100 text-primary-700' : 'bg-clinical-100 text-clinical-500'
+            }`}>
+              {activityEntries.length}
+            </span>
+          </button>
         </div>
-        <p className="mt-1 text-xs text-clinical-400">
-          Alerts, acknowledgments, and configuration changes recorded for this item.
-        </p>
 
-        {auditEntries.length > 0 ? (
-          <div className="mt-4 divide-y divide-clinical-100 rounded-xl border border-clinical-200">
-            {auditEntries.map(entry => (
-              <div key={entry.id} className="flex items-start gap-3 px-4 py-2.5">
-                <span className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
-                  entry.actor === 'system'
-                    ? 'bg-clinical-100 text-clinical-600'
-                    : 'bg-primary-50 text-primary-700'
-                }`}>
-                  {entry.actor === 'system' ? '⚙' : '👤'}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium text-clinical-700">
-                    {AUDIT_ACTION_LABELS[entry.action]}
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-clinical-500">{entry.detail}</p>
-                </div>
-                <p className="shrink-0 font-mono text-[10px] text-clinical-400">{entry.timestamp}</p>
+        {activeTab === 'deductions' ? (
+          <>
+            <div className="flex items-end justify-between">
+              <p className="text-xs text-clinical-400">Recorded procedure deductions</p>
+              <div className="text-right">
+                <p className="text-lg font-bold leading-none text-clinical-900">{totalUsed}</p>
+                <p className="text-[11px] text-clinical-400">{item.unit} used</p>
               </div>
-            ))}
-          </div>
+            </div>
+
+            <div className="mt-4 inline-flex rounded-lg border border-clinical-200 bg-white p-0.5">
+              {([7, 30, 90] as const).map(range => (
+                <button
+                  key={range}
+                  type="button"
+                  onClick={() => setHistoryRange(range)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                    historyRange === range
+                      ? 'bg-clinical-800 text-white'
+                      : 'text-clinical-500 hover:bg-clinical-50 hover:text-clinical-800'
+                  }`}
+                >
+                  {range} days
+                </button>
+              ))}
+            </div>
+
+            {procedureBreakdown.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setProcedureFilter('all')}
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                    procedureFilter === 'all'
+                      ? 'border-primary-300 bg-primary-50 text-primary-700'
+                      : 'border-clinical-200 bg-white text-clinical-600 hover:border-primary-300'
+                  }`}
+                >
+                  All procedures
+                </button>
+                {procedureBreakdown.map(({ procedure, qty }) => (
+                  <button
+                    key={procedure}
+                    type="button"
+                    onClick={() => setProcedureFilter(procedure)}
+                    className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                      procedureFilter === procedure
+                        ? 'border-primary-300 bg-primary-50 text-primary-700'
+                        : 'border-clinical-200 bg-white text-clinical-600 hover:border-primary-300'
+                    }`}
+                  >
+                    {procedure} <span className="ml-1 opacity-60">{qty}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {filteredEntries.length > 0 ? (
+              <div className="mt-4 divide-y divide-clinical-100 rounded-xl border border-clinical-200">
+                {filteredEntries.slice(0, 20).map(entry => (
+                  <div key={entry.id} className="flex items-start justify-between gap-4 px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium text-clinical-700">{entry.procedure}</p>
+                      <p className="mt-1 truncate text-[11px] text-clinical-400">
+                        {entry.performedBy} · Patient {entry.patientId}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="text-xs font-semibold text-clinical-700">-{entry.qty} {item.unit}</p>
+                      <p className="mt-1 text-[11px] text-clinical-400">
+                        {new Date(entry.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 rounded-xl border border-dashed border-clinical-200 px-4 py-8 text-center">
+                <IconClock className="mx-auto h-5 w-5 text-clinical-300" />
+                <p className="mt-2 text-xs font-medium text-clinical-600">
+                  {procedureFilter === 'all' ? 'No consumption recorded in this period' : 'No deductions for this procedure'}
+                </p>
+              </div>
+            )}
+          </>
         ) : (
-          <div className="mt-4 rounded-xl border border-dashed border-clinical-200 px-4 py-6 text-center">
-            <p className="text-xs text-clinical-400">No activity recorded for this item yet.</p>
-          </div>
+          <>
+            <p className="text-xs text-clinical-400">
+              Alerts, stock decisions, and order events recorded for this item.
+            </p>
+            {activityEntries.length > 0 ? (
+              <div className="mt-4 divide-y divide-clinical-100 rounded-xl border border-clinical-200">
+                {activityEntries.slice(0, 40).map(entry => (
+                  <ActivityRow key={entry.id} entry={entry} />
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 rounded-xl border border-dashed border-clinical-200 px-4 py-8 text-center">
+                <IconClock className="mx-auto h-5 w-5 text-clinical-300" />
+                <p className="mt-2 text-xs font-medium text-clinical-600">No activity recorded for this item yet</p>
+                <p className="mt-1 text-[11px] text-clinical-400">
+                  Alerts, orders, and configuration changes will appear here.
+                </p>
+              </div>
+            )}
+          </>
         )}
       </section>
+    </div>
+  );
+}
+
+function ActivityRow({ entry }: { entry: ActivityEntry }) {
+  const icon = (() => {
+    if (entry.source === 'order') {
+      if (entry.action.startsWith('Physical receipt')) return <IconCheck className="h-3.5 w-3.5" />;
+      if (entry.action.startsWith('PO dispatched')) return <IconMail className="h-3.5 w-3.5" />;
+      if (entry.action.startsWith('Auto-drafted') || entry.action.startsWith('Backup order')) return <IconPackage className="h-3.5 w-3.5" />;
+      if (entry.action.startsWith('Rerouted')) return <IconExternalLink className="h-3.5 w-3.5" />;
+      if (entry.action.startsWith('Order cancelled')) return <IconX className="h-3.5 w-3.5" />;
+      if (entry.action.startsWith('Doctor classified') || entry.action.startsWith('Doctor reclassified')) return <IconCheck className="h-3.5 w-3.5" />;
+      if (entry.action.startsWith('Purchase Order printed')) return <IconPrinter className="h-3.5 w-3.5" />;
+      if (entry.action.startsWith('Status - Being Delivered')) return <IconPackage className="h-3.5 w-3.5" />;
+      return <IconClock className="h-3.5 w-3.5" />;
+    }
+    if (entry.action.startsWith('Alert')) return <IconBell className="h-3.5 w-3.5" />;
+    if (entry.action.startsWith('Batch discarded')) return <IconTrash className="h-3.5 w-3.5" />;
+    if (entry.action.startsWith('Item created') || entry.action.startsWith('Item updated')) return <IconPencil className="h-3.5 w-3.5" />;
+    if (entry.action.startsWith('Item deleted')) return <IconTrash className="h-3.5 w-3.5" />;
+    return <IconClock className="h-3.5 w-3.5" />;
+  })();
+
+  const toneClasses = (() => {
+    if (entry.source === 'order') {
+      if (entry.action.includes('cancelled') || entry.action.includes('reclassified')) return 'bg-warning-50 text-warning-700';
+      if (entry.action.startsWith('Physical receipt')) return 'bg-success-50 text-success-700';
+      return 'bg-primary-50 text-primary-700';
+    }
+    if (entry.action.startsWith('Alert fired')) return 'bg-warning-50 text-warning-700';
+    if (entry.action.startsWith('Alert')) return 'bg-success-50 text-success-700';
+    if (entry.action.startsWith('Item deleted') || entry.action.startsWith('Batch discarded')) return 'bg-alert-50 text-alert-700';
+    return 'bg-clinical-100 text-clinical-600';
+  })();
+
+  const sourceLabel = entry.source === 'order' ? 'Order' : 'Stock';
+  const sourceBadge = entry.source === 'order'
+    ? 'bg-primary-50 text-primary-700'
+    : 'bg-clinical-100 text-clinical-500';
+
+  return (
+    <div className="flex items-start gap-3 px-4 py-2.5">
+      <span className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${toneClasses}`}>
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <p className="text-xs font-medium text-clinical-700">{entry.action}</p>
+          <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${sourceBadge}`}>
+            {sourceLabel}
+          </span>
+        </div>
+        <p className="mt-0.5 text-[11px] leading-relaxed text-clinical-500">{entry.detail}</p>
+      </div>
+      <p className="shrink-0 font-mono text-[10px] text-clinical-400">{entry.timestamp}</p>
     </div>
   );
 }
@@ -920,11 +955,12 @@ function ItemDetails({ item }: { item: InventoryRow }) {
 interface ItemDrawerProps {
   item?: InventoryRow;
   initialMode?: 'view' | 'edit';
+  initialTab?: DetailTab;
   onSave: (item: InventoryItem) => void;
   onClose: () => void;
 }
 
-function ItemDrawer({ item, initialMode = 'view', onSave, onClose }: ItemDrawerProps) {
+function ItemDrawer({ item, initialMode = 'view', initialTab, onSave, onClose }: ItemDrawerProps) {
   const { suppliers } = useClinic();
   const isNew = !item;
   const source = item?.sourceItem;
@@ -1043,7 +1079,7 @@ function ItemDrawer({ item, initialMode = 'view', onSave, onClose }: ItemDrawerP
         </div>
 
         {!editing && item ? (
-          <ItemDetails item={item} />
+          <ItemDetails item={item} initialTab={initialTab} />
         ) : (
           <div className="flex-1 overflow-y-auto px-6 py-6">
             {error && (
@@ -1232,8 +1268,11 @@ function BatchRow({ id, quantity, timing }: { id: string; quantity: string; timi
 }
 
 function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => void }) {
-  const { discardBatch, saveInventoryItem } = useClinic();
-  const source = item.sourceItem;
+  const { discardBatch, saveInventoryItem, expiryAlertDays, inventory } = useClinic();
+  // Read the item live from context so discarding a batch / adding a batch
+  // immediately reflects in the "Usable stock" header and grouped lists
+  // without needing to close and reopen the drawer.
+  const source = inventory.find(i => i.id === item.id) ?? item.sourceItem;
 
   const [showAddBatch, setShowAddBatch] = useState(false);
   const [discarded, setDiscarded] = useState<string[]>([]);
@@ -1244,9 +1283,9 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
   const expired = batches.filter(b => new Date(b.expiry).getTime() < now);
   const expiringSoon = batches.filter(b => {
     const t = new Date(b.expiry).getTime();
-    return t >= now && t - now <= 30 * 86400000;
+    return t >= now && t - now <= expiryAlertDays * 86400000;
   });
-  const fresh = batches.filter(b => new Date(b.expiry).getTime() - now > 30 * 86400000);
+  const fresh = batches.filter(b => new Date(b.expiry).getTime() - now > expiryAlertDays * 86400000);
 
   const handleAddBatch = (batch: InventoryBatch) => {
     saveInventoryItem({
@@ -1264,7 +1303,7 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
           <p className="font-display text-lg font-semibold text-clinical-900">{item.name}</p>
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-xs font-medium uppercase tracking-wide text-clinical-400">Usable stock</span>
-            <span className="text-xl font-bold text-clinical-900">{item.quantity}</span>
+            <span className="text-xl font-bold text-clinical-900">{source.quantity}</span>
             <span className="text-xs text-clinical-400">{item.unit}</span>
           </div>
         </div>
@@ -1456,15 +1495,7 @@ function AlertSettingsPopover({ onClose }: { onClose: () => void }) {
 
 // ── Delete confirmation modal ─────────────────────────────────
 
-function DeleteItemConfirm({
-  item,
-  onConfirm,
-  onCancel,
-}: {
-  item: InventoryRow;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
+function DeleteItemConfirm({ item, onConfirm, onCancel }: { item: InventoryRow; onConfirm: () => void; onCancel: () => void }) {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <button aria-label="Cancel" onClick={onCancel} className="absolute inset-0 bg-clinical-900/40" />
@@ -1482,16 +1513,10 @@ function DeleteItemConfirm({
           </div>
         </div>
         <div className="mt-6 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50"
-          >
+          <button onClick={onCancel} className="rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50">
             Cancel
           </button>
-          <button
-            onClick={onConfirm}
-            className="rounded-lg bg-alert-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-alert-700"
-          >
+          <button onClick={onConfirm} className="rounded-lg bg-alert-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-alert-700">
             Delete Item
           </button>
         </div>

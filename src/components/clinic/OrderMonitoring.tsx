@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   IconAlert,
   IconCheck,
@@ -11,13 +11,8 @@ import {
   IconMail,
   IconMoreVertical,
   IconPackage,
-  IconPause,
-  IconPlay,
   IconPrinter,
-  IconScan,
   IconSearch,
-  IconSettings,
-  IconTruck,
   IconX,
 } from '../icons';
 import {
@@ -27,6 +22,7 @@ import {
   type OrderTimelineEvent,
   type InventoryItem,
   type Supplier,
+  type ResponseClass,
 } from '../../context/ClinicContext';
 
 // ── Display adapter ───────────────────────────────────────────
@@ -61,6 +57,28 @@ function isPending(status: OrderStatus): boolean {
   return ['queued', 'sent', 'confirmed', 'being_delivered', 'rerouted'].includes(status);
 }
 
+function isTerminal(status: OrderStatus): boolean {
+  return status === 'completed' || status === 'cancelled';
+}
+
+/**
+ * Whether the doctor can physically receive this order.
+ *
+ * Excludes `rerouted` parents: the parent has already handed off to a backup
+ * child, and confirming receipt on the parent would restock the same physical
+ * delivery twice — once against the parent, once against the child.
+ */
+function canReceiveDelivery(status: OrderStatus): boolean {
+  return !isTerminal(status) && status !== 'rerouted';
+}
+
+const RESPONSE_LABELS: Record<ResponseClass, string> = {
+  confirmed: 'Confirmed',
+  unavailable: 'Unavailable',
+  no_response: 'No Response',
+  unclear: 'Unclear',
+};
+
 // ── Status badge ──────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: OrderStatus }) {
@@ -77,7 +95,7 @@ function StatusBadge({ status }: { status: OrderStatus }) {
     status === 'unavailable' || status === 'no_response' ? IconAlert
     : status === 'completed' ? IconCheck
     : status === 'unclear' || status === 'rerouted' ? IconClock
-    : status === 'being_delivered' ? IconTruck
+    : status === 'being_delivered' ? IconPackage
     : status === 'cancelled' ? IconX
     : IconClock;
 
@@ -158,16 +176,136 @@ function FullEmailModal({
   );
 }
 
+// ── Override classification modal ─────────────────────────────
+
+function OverrideClassificationModal({
+  order,
+  onClose,
+  onApply,
+}: {
+  order: SupplyOrder;
+  onClose: () => void;
+  onApply: (cls: ResponseClass, reason?: string) => void;
+}) {
+  const [cls, setCls] = useState<ResponseClass>(order.responseClass ?? 'confirmed');
+  const [reason, setReason] = useState('');
+
+  const currentLabel = order.responseClass ? RESPONSE_LABELS[order.responseClass] : 'Not yet classified';
+  const options: { id: ResponseClass; label: string; hint: string; tone: string }[] = [
+    { id: 'confirmed',    label: 'Confirmed',    hint: 'Supplier said yes — send order to Being Delivered.', tone: 'success' },
+    { id: 'unavailable',  label: 'Unavailable',  hint: 'Supplier said no — reroute to next backup supplier.', tone: 'alert' },
+    { id: 'no_response',  label: 'No Response',  hint: 'Supplier went silent — reroute to next backup supplier.', tone: 'alert' },
+  ];
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    onApply(cls, reason.trim() || undefined);
+  };
+
+  return (
+    <Overlay align="center" onClose={onClose}>
+      <form
+        onSubmit={handleSubmit}
+        className="relative flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+      >
+        <div className="flex items-start justify-between border-b border-clinical-200 px-6 py-5">
+          <div>
+            <p className="font-display text-lg font-semibold text-clinical-900">Override classification</p>
+            <p className="mt-0.5 text-xs text-clinical-500">
+              {order.poRef} · Currently: <span className="font-semibold text-clinical-700">{currentLabel}</span>
+            </p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
+            <IconX className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          <p className="text-xs leading-relaxed text-clinical-500">
+            Reclassify the supplier response at any time. The order will follow the new
+            path immediately, and the change is recorded in the audit trail.
+          </p>
+
+          <div className="space-y-2">
+            {options.map(opt => {
+              const selected = cls === opt.id;
+              const selectedStyles =
+                opt.tone === 'success'
+                  ? 'border-success-300 bg-success-50'
+                  : 'border-alert-300 bg-alert-50';
+              return (
+                <label
+                  key={opt.id}
+                  className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${
+                    selected ? selectedStyles : 'border-clinical-200 bg-white hover:border-clinical-300'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="classification"
+                    checked={selected}
+                    onChange={() => setCls(opt.id)}
+                    className="mt-0.5 h-4 w-4 accent-primary-600"
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-clinical-800">{opt.label}</p>
+                    <p className="mt-0.5 text-[11px] text-clinical-500">{opt.hint}</p>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-semibold text-clinical-700">
+              Reason <span className="font-normal text-clinical-400">(optional)</span>
+            </span>
+            <textarea
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              rows={2}
+              placeholder="e.g. Called supplier — 5ml version available, confirming shipment"
+              className="w-full resize-none rounded-lg border border-clinical-200 bg-white px-3 py-2 text-sm text-clinical-800 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 placeholder:text-clinical-300"
+            />
+          </label>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-clinical-200 bg-clinical-50 px-6 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-clinical-200 bg-white px-4 py-2.5 text-xs font-semibold text-clinical-700 hover:bg-clinical-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="rounded-lg bg-primary-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-primary-800"
+          >
+            Apply Override
+          </button>
+        </div>
+      </form>
+    </Overlay>
+  );
+}
+
 // ── Timeline drawer ───────────────────────────────────────────
 
 function TimelineDrawer({
   order,
   timeline,
   onClose,
+  onCancelOrder,
+  onReceiveDelivery,
+  onClassify,
 }: {
   order: SupplyOrder;
   timeline: OrderTimelineEvent[];
   onClose: () => void;
+  onCancelOrder: (orderId: string) => void;
+  onReceiveDelivery: (order: SupplyOrder) => void;
+  onClassify: (orderId: string, cls: ResponseClass, isOverride: boolean) => void;
 }) {
   const { suppliers } = useClinic();
   const supplier = suppliers.find(s => s.id === order.supplierId);
@@ -175,6 +313,7 @@ function TimelineDrawer({
   const [exported, setExported] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState<{ snippet: EmailSnippet; date: string } | null>(null);
   const requiresIntervention = isActionRequired(order.status);
+  const canAct = !isTerminal(order.status);
 
   return (
     <>
@@ -203,27 +342,30 @@ function TimelineDrawer({
                   : event.kind === 'dispatched' ? IconMail
                   : event.kind === 'reply-parsed' ? IconMail
                   : event.kind === 'classified' ? IconCheck
+                  : event.kind === 'reclassified' ? IconCheck
                   : event.kind === 'rerouted' ? IconExternalLink
                   : event.kind === 'timeout' ? IconClock
                   : event.kind === 'escalated' ? IconAlert
                   : event.kind === 'received' ? IconCheck
+                  : event.kind === 'cancelled' ? IconX
+                  : event.kind === 'document' ? IconPrinter
                   : IconPackage;
                 const tone =
                   event.kind === 'received' || event.kind === 'classified' ? 'success'
+                  : event.kind === 'reclassified' ? 'warning'
                   : event.kind === 'escalated' || event.kind === 'timeout' ? 'alert'
+                  : event.kind === 'cancelled' ? 'neutral'
                   : event.kind === 'rerouted' ? 'warning'
                   : 'primary';
+                const toneClasses =
+                  tone === 'success' ? 'border-success-100 text-success-700'
+                  : tone === 'alert' ? 'border-alert-100 text-alert-700'
+                  : tone === 'warning' ? 'border-warning-100 text-warning-700'
+                  : tone === 'neutral' ? 'border-clinical-200 text-clinical-500'
+                  : 'border-clinical-200 text-primary-700';
                 return (
                   <div key={event.id} className={index < events.length - 1 ? 'pb-8' : 'pb-2'}>
-                    <span className={`absolute -left-4 flex h-8 w-8 items-center justify-center rounded-full border bg-white shadow-sm ${
-                      tone === 'success'
-                        ? 'border-success-100 text-success-700'
-                        : tone === 'alert'
-                          ? 'border-alert-100 text-alert-700'
-                          : tone === 'warning'
-                            ? 'border-warning-100 text-warning-700'
-                            : 'border-clinical-200 text-primary-700'
-                    }`}>
+                    <span className={`absolute -left-4 flex h-8 w-8 items-center justify-center rounded-full border bg-white shadow-sm ${toneClasses}`}>
                       <EventIcon className="h-4 w-4" />
                     </span>
                     <p className="text-xs font-medium text-clinical-400">{event.timestamp}</p>
@@ -254,14 +396,61 @@ function TimelineDrawer({
             </div>
           )}
         </div>
-        {requiresIntervention ? (
-          <div className="border-t border-clinical-200 bg-white px-7 py-5 shadow-lg">
+        {requiresIntervention && canAct ? (
+          <div className="border-t border-clinical-200 bg-white px-7 py-5 shadow-lg space-y-3">
             <div className="flex items-start gap-2.5">
               <IconAlert className="mt-0.5 h-4 w-4 shrink-0 text-alert-600" />
               <div>
                 <p className="text-sm font-semibold text-clinical-900">Manual resolution required</p>
-                <p className="mt-1 text-xs text-clinical-500">The final exception rule requires a human action.</p>
+                <p className="mt-1 text-xs text-clinical-500">
+                  No further backups available. Reclassify the response, obtain the supplies
+                  through another channel, or cancel this order.
+                </p>
               </div>
+            </div>
+
+            <div>
+              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-clinical-500">
+                Reclassify response as:
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => { onClassify(order.id, 'confirmed', true); onClose(); }}
+                  className="rounded-md border border-success-200 bg-success-50 px-2.5 py-1.5 text-[11px] font-semibold text-success-700 hover:bg-success-100"
+                >
+                  Confirmed
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { onClassify(order.id, 'unavailable', true); onClose(); }}
+                  className="rounded-md border border-alert-200 bg-alert-50 px-2.5 py-1.5 text-[11px] font-semibold text-alert-700 hover:bg-alert-100"
+                >
+                  Unavailable
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { onClassify(order.id, 'no_response', true); onClose(); }}
+                  className="rounded-md border border-alert-200 bg-alert-50 px-2.5 py-1.5 text-[11px] font-semibold text-alert-700 hover:bg-alert-100"
+                >
+                  No Response
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { onReceiveDelivery(order); onClose(); }}
+                className="flex-1 rounded-lg bg-success-600 px-3 py-2.5 text-xs font-semibold text-white hover:bg-success-700"
+              >
+                Mark Received
+              </button>
+              <button
+                onClick={() => { onCancelOrder(order.id); onClose(); }}
+                className="flex-1 rounded-lg border border-alert-200 bg-alert-50 px-3 py-2.5 text-xs font-semibold text-alert-700 hover:bg-alert-100"
+              >
+                Cancel Order
+              </button>
             </div>
           </div>
         ) : (
@@ -289,13 +478,6 @@ function TimelineDrawer({
 
 // ── Purchase Order preview drawer ─────────────────────────────
 
-/**
- * Renders the PO in the same visual style the printed output will use, so
- * the doctor sees exactly what will be printed. The "Print / Save as PDF"
- * button delegates to the browser's print dialog, which offers "Save as
- * PDF" as a destination. Scoped print CSS in index.css hides the rest of
- * the app so only `#po-print-region` appears on paper.
- */
 function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void }) {
   const { suppliers, logPurchaseOrderPrint } = useClinic();
   const supplier = suppliers.find(s => s.id === order.supplierId);
@@ -303,15 +485,12 @@ function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void 
 
   const handlePrint = () => {
     logPurchaseOrderPrint(order.id);
-    // Defer so the timeline append commits before the browser freezes the
-    // page for the print snapshot.
     setTimeout(() => window.print(), 50);
   };
 
   return (
     <Overlay align="right" onClose={onClose}>
       <aside className="relative flex h-full min-h-screen w-full max-w-2xl flex-col bg-white shadow-2xl">
-        {/* Drawer chrome — not part of the printed output */}
         <div className="flex items-center gap-4 border-b border-clinical-200 px-6 py-5">
           <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
             <IconX className="h-5 w-5" />
@@ -322,17 +501,14 @@ function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void 
           </div>
         </div>
 
-        {/* Print region — everything below gets printed */}
         <div className="flex-1 overflow-y-auto">
           <div id="po-print-region" className="px-10 py-10 text-clinical-900">
-            {/* Letterhead */}
             <div className="border-b-2 border-primary-700 pb-4 text-center">
               <p className="text-xl font-bold tracking-[0.2em] text-primary-700">PURCHASE ORDER</p>
               <p className="mt-1.5 text-sm font-semibold text-clinical-900">Premier Dental Solutions PH</p>
               <p className="mt-0.5 text-xs text-clinical-500">Makati Branch · procurement@premierdental.ph</p>
             </div>
 
-            {/* Meta grid */}
             <div className="mt-7 grid grid-cols-2 gap-8">
               <div>
                 <p className="border-b border-clinical-200 pb-1 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
@@ -360,7 +536,6 @@ function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void 
               </div>
             </div>
 
-            {/* Line items */}
             <table className="mt-8 w-full text-sm">
               <thead>
                 <tr className="border-b-2 border-clinical-200">
@@ -392,7 +567,6 @@ function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void 
               </tfoot>
             </table>
 
-            {/* Footer */}
             <div className="mt-12 border-t border-clinical-200 pt-4 text-center text-[11px] text-clinical-400">
               <p>Auto-generated by Premier Dental Solutions PH — Supply Ordering module.</p>
               <p className="mt-1">For inquiries, contact procurement@premierdental.ph.</p>
@@ -400,7 +574,6 @@ function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void 
           </div>
         </div>
 
-        {/* Drawer footer — not printed */}
         <div className="flex items-center justify-between gap-3 border-t border-clinical-200 bg-white px-6 py-4 shadow-lg">
           <p className="text-[11px] text-clinical-500">
             Preview shown above. Print or save as PDF using your browser dialog.
@@ -671,9 +844,7 @@ function ReceiveModal({
 // ── Main OrderMonitoring component ───────────────────────────
 
 interface OrderMonitoringProps {
-  /** Order ID to auto-open (e.g. deep-linked from Inventory). */
   initialOrderId?: string | null;
-  /** Called after the initialOrderId has been consumed so the parent can clear it. */
   onConsumeInitialOrderId?: () => void;
 }
 
@@ -690,6 +861,7 @@ export default function OrderMonitoring({
      orderDispatchLog,
      confirmReceived,
      classifyResponse,
+     cancelOrder,
    } = useClinic();
 
   const [filter, setFilter] = useState<FilterTab>('all');
@@ -700,10 +872,10 @@ export default function OrderMonitoring({
   const [receiveOrder, setReceiveOrder] = useState<SupplyOrder | null>(null);
   const [invoiceOrder, setInvoiceOrder] = useState<SupplyOrder | null>(null);
   const [poOrder, setPoOrder] = useState<SupplyOrder | null>(null);
+  const [overrideTarget, setOverrideTarget] = useState<SupplyOrder | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
   const pageSize = 5;
 
-  // ── Deep-link: auto-open the timeline drawer for the requested order ──
   const consumedInitialOrderRef = useRef<string | null>(null);
   useEffect(() => {
     if (!initialOrderId) return;
@@ -804,6 +976,8 @@ export default function OrderMonitoring({
                 const bouncedLog = orderDispatchLog.find(
                   l => l.orderId === order.id && l.deliveryStatus === 'bounced'
                 );
+                const canAct = !isTerminal(order.status);
+                const canOverride = canAct && order.status !== 'unclear';
                 return (
                   <tr key={order.id} className="group transition hover:bg-clinical-50/60">
                     <td className="px-4 py-5 align-top">
@@ -860,8 +1034,8 @@ export default function OrderMonitoring({
                           {order.status === 'unclear' && (
                             <div className="mt-3 flex items-center gap-1.5">
                               <span className="text-[10px] text-clinical-500 mr-1">Classify:</span>
-                              <button onClick={() => classifyResponse(order.id, 'confirmed')} className="px-2 py-1 bg-success-600 text-white text-[10px] font-bold rounded hover:bg-success-700">Confirmed</button>
-                              <button onClick={() => classifyResponse(order.id, 'unavailable')} className="px-2 py-1 bg-alert-600 text-white text-[10px] font-bold rounded hover:bg-alert-700">Unavailable</button>
+                              <button onClick={() => classifyResponse(order.id, 'confirmed', false)} className="px-2 py-1 bg-success-600 text-white text-[10px] font-bold rounded hover:bg-success-700">Confirmed</button>
+                              <button onClick={() => classifyResponse(order.id, 'unavailable', false)} className="px-2 py-1 bg-alert-600 text-white text-[10px] font-bold rounded hover:bg-alert-700">Unavailable</button>
                             </div>
                           )}
                         </div>
@@ -871,10 +1045,20 @@ export default function OrderMonitoring({
                       <div className="relative" data-order-menu>
                         <button onClick={() => setMenuId(menuId === order.id ? null : order.id)} aria-label={`Actions for ${order.poRef}`} className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800"><IconMoreVertical className="h-5 w-5" /></button>
                         {menuId === order.id && (
-                          <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
+                          <div className="absolute right-0 top-full z-50 mt-2 w-60 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
                             <button onClick={() => { setPoOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                               <IconPrinter className="h-4 w-4 shrink-0 text-clinical-500" /> Preview purchase order
                             </button>
+                            {canOverride && (
+                              <button onClick={() => { setOverrideTarget(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                                <IconExternalLink className="h-4 w-4 shrink-0 text-clinical-500" /> Override classification…
+                              </button>
+                            )}
+                            {canReceiveDelivery(order.status) && (
+                              <button onClick={() => { setReceiveOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                                <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" /> Receive delivery
+                              </button>
+                            )}
                             {order.status === 'completed' && (
                               <button onClick={() => { setInvoiceOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                                 <IconFileText className="h-4 w-4 shrink-0 text-clinical-500" /> View invoice
@@ -883,6 +1067,17 @@ export default function OrderMonitoring({
                             <button onClick={() => { openTimeline(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                               <IconClock className="h-4 w-4 shrink-0 text-clinical-500" /> View audit trail
                             </button>
+                            {canAct && (
+                              <>
+                                <div className="my-1 border-t border-clinical-100" />
+                                <button
+                                  onClick={() => { cancelOrder(order.id); setMenuId(null); }}
+                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-alert-700 hover:bg-alert-50"
+                                >
+                                  <IconX className="h-4 w-4 shrink-0 text-alert-500" /> Cancel order
+                                </button>
+                              </>
+                            )}
                           </div>
                         )}
                       </div>
@@ -909,12 +1104,25 @@ export default function OrderMonitoring({
       {timelineOpen && selected && (
         <TimelineDrawer
           order={selected}
-          timeline={orderTimeline.filter(e => e.orderId === selected.id).sort((a, b) => a.timestamp.localeCompare(b.timestamp))}
+          timeline={orderTimeline.filter(e => e.orderId === selected.id).sort((a, b) => a.ts - b.ts)}
           onClose={() => { setTimelineOpen(false); setSelected(null); }}
+          onCancelOrder={cancelOrder}
+          onReceiveDelivery={(o) => setReceiveOrder(o)}
+          onClassify={(id, cls, isOverride) => classifyResponse(id, cls, isOverride)}
         />
       )}
       {poOrder && <PODrawer order={poOrder} onClose={() => setPoOrder(null)} />}
       {invoiceOrder && <InvoiceDrawer order={invoiceOrder} inventory={inventory} onClose={() => setInvoiceOrder(null)} />}
+      {overrideTarget && (
+        <OverrideClassificationModal
+          order={overrideTarget}
+          onClose={() => setOverrideTarget(null)}
+          onApply={(cls, reason) => {
+            classifyResponse(overrideTarget.id, cls, true, reason);
+            setOverrideTarget(null);
+          }}
+        />
+      )}
       {receiveOrder && (
         <ReceiveModal
           order={receiveOrder}
