@@ -53,6 +53,8 @@ export default function ClinicApp({ user, onLogout }: Props) {
   const [billingModule, setBillingModule] = useState<BillingModule>('payments');
   const [billingAdjustmentTab, setBillingAdjustmentTab] = useState<AdjustmentTab>('refunds');
   const [inventoryEditTarget, setInventoryEditTarget] = useState<string | null>(null);
+  // Deep-link target when Inventory → Orders navigation is triggered.
+  const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
 
   const initials = user.name.split(' ')
     .filter(w => /^[A-Z]/.test(w) || w.startsWith('Dr'))
@@ -67,12 +69,20 @@ export default function ClinicApp({ user, onLogout }: Props) {
   const handleNavChange = (v: View) => {
     setView(v);
     if (v !== 'patients') setSelectedPatient(null);
+    // Clear any stale deep-link target when the user navigates elsewhere manually.
+    if (v !== 'orders') setPendingOrderId(null);
   };
 
   const handleOpenBilling = (module: BillingModule, adjustmentTab?: AdjustmentTab) => {
     setBillingModule(module);
     if (adjustmentTab) setBillingAdjustmentTab(adjustmentTab);
     setView('billing');
+    setSelectedPatient(null);
+  };
+
+  const handleNavigateToOrder = (orderId: string) => {
+    setPendingOrderId(orderId);
+    setView('orders');
     setSelectedPatient(null);
   };
 
@@ -197,13 +207,21 @@ export default function ClinicApp({ user, onLogout }: Props) {
               {view === 'billing'    && <Billing initialModule={billingModule} initialAdjustmentTab={billingAdjustmentTab} />}
               {view === 'scheduling' && <Scheduling />}
               {view === 'calendar'   && <Charting />}
-	      {view === 'inventory'  && <Inventory initialEditItemName={inventoryEditTarget} />}
+              {view === 'inventory'  && (
+                <Inventory
+                  initialEditItemName={inventoryEditTarget}
+                  onNavigateToOrder={handleNavigateToOrder}
+                />
+              )}
               {view === 'orders'     && (
                 <div className="mx-auto max-w-[1500px] p-6 lg:p-8">
                   <div className="mb-7">
                     <p className="font-display text-2xl font-semibold tracking-tight text-clinical-900">Order Monitoring</p>
                   </div>
-                  <OrderMonitoring />
+                  <OrderMonitoring
+                    initialOrderId={pendingOrderId}
+                    onConsumeInitialOrderId={() => setPendingOrderId(null)}
+                  />
                 </div>
               )}
               {view === 'suppliers'  && <Suppliers />}
@@ -236,5 +254,3 @@ function PlaceholderView({ view, setView }: { view: View; setView: (v: View) => 
     </div>
   );
 }
-
-

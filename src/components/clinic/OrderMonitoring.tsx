@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   IconAlert,
   IconCheck,
@@ -523,7 +523,17 @@ function ReceiveModal({
 
 // ── Main OrderMonitoring component ───────────────────────────
 
-export default function OrderMonitoring() {
+interface OrderMonitoringProps {
+  /** Order ID to auto-open (e.g. deep-linked from Inventory). */
+  initialOrderId?: string | null;
+  /** Called after the initialOrderId has been consumed so the parent can clear it. */
+  onConsumeInitialOrderId?: () => void;
+}
+
+export default function OrderMonitoring({
+  initialOrderId,
+  onConsumeInitialOrderId,
+}: OrderMonitoringProps = {}) {
    const {
      orders,
      orderTimeline,
@@ -545,6 +555,20 @@ export default function OrderMonitoring() {
   const [invoiceOrder, setInvoiceOrder] = useState<SupplyOrder | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
   const pageSize = 5;
+
+  // ── Deep-link: auto-open the timeline drawer for the requested order ──
+  const consumedInitialOrderRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialOrderId) return;
+    if (consumedInitialOrderRef.current === initialOrderId) return;
+    const target = orders.find(o => o.id === initialOrderId);
+    if (target) {
+      setSelected(target);
+      setTimelineOpen(true);
+    }
+    consumedInitialOrderRef.current = initialOrderId;
+    onConsumeInitialOrderId?.();
+  }, [initialOrderId, orders, onConsumeInitialOrderId]);
 
   // Build display list with resolved supplier/item
   const displayOrders: DisplayOrder[] = useMemo(() => orders.map(order => ({

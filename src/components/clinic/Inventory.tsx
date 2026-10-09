@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
+  IconBell,
   IconCheck,
   IconChevronRight,
   IconClock,
@@ -21,6 +22,7 @@ import {
 type StockState = 'critical' | 'low' | 'normal' | 'overstock';
 type ExpiryState = 'expired' | 'expiring' | 'fresh' | 'none';
 type Filter = 'expired' | 'all' | 'low' | 'expiring';
+type PrimaryView = 'stock' | 'alerts';
 
 export interface InventoryRow {
   id: string;
@@ -38,6 +40,7 @@ export interface InventoryRow {
   systemKind: 'queued' | 'sent' | 'monitoring';
   sourceItem: InventoryItem;
   activeAlert?: InventoryAlertLog;
+  linkedOrder?: SupplyOrder;
 }
 
 /** Discriminated union describing which drawer (if any) is open. */
@@ -60,7 +63,6 @@ function buildInventoryRows(
     const rawStatus = getStockStatus(item);
     const stock: StockState = rawStatus === 'ok' ? 'normal' : rawStatus;
 
-    // Expiry classification
     let expiry: ExpiryState = 'none';
     let expiryTitle = 'Non-perishable';
     let expiryDetail = 'No batch tracking';
@@ -140,6 +142,7 @@ function buildInventoryRows(
       systemKind,
       sourceItem: item,
       activeAlert,
+      linkedOrder,
     };
   });
 }
@@ -187,14 +190,6 @@ function IconPencil({ className = 'w-4 h-4' }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
       <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" strokeLinecap="round" strokeLinejoin="round" />
       <path d="m14 7 3 3" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function IconBell({ className = 'w-4 h-4' }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" strokeLinecap="round" />
     </svg>
   );
 }
@@ -266,14 +261,27 @@ function ExpiryCell({ item }: { item: InventoryRow }) {
   );
 }
 
+/**
+ * System Action cell.
+ *
+ * Shows:
+ *   1. The current system status text (icon + label)
+ *   2. A state-aware navigation link — "View order", "Confirm receipt",
+ *      "Classify response", "Handle escalation", or "View deductions"
+ *   3. Optional secondary actions (Manage batches, Acknowledge alert)
+ */
 function SystemAction({
   item,
   onManage,
   onAcknowledge,
+  onViewOrder,
+  onViewDeductions,
 }: {
   item: InventoryRow;
   onManage: () => void;
   onAcknowledge: () => void;
+  onViewOrder: (orderId: string) => void;
+  onViewDeductions: () => void;
 }) {
   const SystemIcon = item.systemKind === 'sent'
     ? IconTruck
@@ -281,8 +289,46 @@ function SystemAction({
         ? IconPackage
         : IconClock;
 
+  const primaryAction: { label: string; onClick: () => void } = (() => {
+    if (item.activeAlert?.severity === 'overstock') {
+      return { label: 'View deductions', onClick: onViewDeductions };
+    }
+    if (item.linkedOrder) {
+      const order = item.linkedOrder;
+      switch (order.status) {
+        case 'queued':
+        case 'sent':
+          return { label: 'View order', onClick: () => onViewOrder(order.id) };
+        case 'being_delivered':
+          return { label: 'Confirm receipt', onClick: () => onViewOrder(order.id) };
+        case 'rerouted':
+          return { label: 'View order audit', onClick: () => onViewOrder(order.id) };
+        case 'unclear':
+          return { label: 'Classify response', onClick: () => onViewOrder(order.id) };
+        case 'unavailable':
+        case 'no_response':
+          return { label: 'Handle escalation', onClick: () => onViewOrder(order.id) };
+        default:
+          return { label: 'View order', onClick: () => onViewOrder(order.id) };
+      }
+    }
+    return { label: 'View deductions', onClick: onViewDeductions };
+  })();
+
   return (
     <div className="min-w-48 space-y-2 text-xs">
+      <div className="flex items-center gap-2 text-clinical-600">
+        <SystemIcon className="h-4 w-4 shrink-0" />
+        <span>{item.systemAction}</span>
+      </div>
+
+      <button
+        onClick={primaryAction.onClick}
+        className="inline-flex items-center gap-1 font-semibold text-primary-700 hover:text-primary-900"
+      >
+        {primaryAction.label} <IconChevronRight className="h-3 w-3" />
+      </button>
+
       {item.humanAction && (
         <div className="flex items-start gap-2 text-alert-700">
           <IconTrash className="mt-0.5 h-4 w-4 shrink-0" />
@@ -294,10 +340,7 @@ function SystemAction({
           </div>
         </div>
       )}
-      <div className="flex items-center gap-2 text-clinical-600">
-        <SystemIcon className="h-4 w-4 shrink-0" />
-        <span>{item.systemAction}</span>
-      </div>
+
       {item.activeAlert && (
         <button
           onClick={onAcknowledge}
@@ -307,6 +350,276 @@ function SystemAction({
           Acknowledge {item.activeAlert.severity} alert
         </button>
       )}
+    </div>
+  );
+}
+
+// ── Alerts view ───────────────────────────────────────────────
+
+type AlertTone = 'alert' | 'warning' | 'info';
+
+const ALERT_TONE_STYLES: Record<AlertTone, {
+  bar: string;
+  title: string;
+  badge: string;
+}> = {
+  alert: {
+    bar: 'border-alert-500',
+    title: 'text-alert-700',
+    badge: 'bg-alert-100 text-alert-800',
+  },
+  warning: {
+    bar: 'border-warning-500',
+    title: 'text-warning-700',
+    badge: 'bg-warning-100 text-warning-800',
+  },
+  info: {
+    bar: 'border-blue-500',
+    title: 'text-blue-700',
+    badge: 'bg-blue-100 text-blue-800',
+  },
+};
+
+function AlertSummaryTile({
+  label,
+  count,
+  tone,
+  sub,
+}: {
+  label: string;
+  count: number;
+  tone: AlertTone;
+  sub: string;
+}) {
+  const s = ALERT_TONE_STYLES[tone];
+  return (
+    <div className="rounded-xl border border-clinical-200 bg-white p-4">
+      <span className={`inline-flex h-8 min-w-8 items-center justify-center rounded-lg px-2 text-sm font-bold ${s.badge}`}>
+        {count}
+      </span>
+      <p className="mt-3 text-xs font-semibold text-clinical-700">{label}</p>
+      <p className="mt-0.5 text-[10px] text-clinical-400">{sub}</p>
+    </div>
+  );
+}
+
+interface AlertsViewProps {
+  rows: InventoryRow[];
+  onAcknowledge: (alertId: string) => void;
+  onViewOrder: (orderId: string) => void;
+  onViewItem: (row: InventoryRow) => void;
+  onManageBatches: (row: InventoryRow) => void;
+}
+
+function AlertsView({
+  rows,
+  onAcknowledge,
+  onViewOrder,
+  onViewItem,
+  onManageBatches,
+}: AlertsViewProps) {
+  // Categorise each item by its highest-severity condition, so an item
+  // that is both critical AND expiring appears only under Critical.
+  const categoryByItem = new Map<string, 'critical' | 'low' | 'overstock' | 'expiry'>();
+  rows.forEach(row => {
+    if (row.stock === 'critical') categoryByItem.set(row.id, 'critical');
+    else if (row.stock === 'low') categoryByItem.set(row.id, 'low');
+    else if (row.stock === 'overstock') categoryByItem.set(row.id, 'overstock');
+    else if (row.expiry === 'expired' || row.expiry === 'expiring') categoryByItem.set(row.id, 'expiry');
+  });
+
+  const critical = rows.filter(r => categoryByItem.get(r.id) === 'critical');
+  const low = rows.filter(r => categoryByItem.get(r.id) === 'low');
+  const overstock = rows.filter(r => categoryByItem.get(r.id) === 'overstock');
+  const expiry = rows.filter(r => categoryByItem.get(r.id) === 'expiry');
+
+  const total = critical.length + low.length + overstock.length + expiry.length;
+
+  if (total === 0) {
+    return (
+      <div className="rounded-xl border border-clinical-200 bg-white px-6 py-16 text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-success-50">
+          <IconCheck className="h-6 w-6 text-success-600" />
+        </div>
+        <p className="mt-3 text-sm font-semibold text-clinical-800">All clear — no active alerts</p>
+        <p className="mt-1 text-xs text-clinical-400">
+          All items are within healthy thresholds and no batches are expiring soon.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <AlertSummaryTile label="Critical Low" count={critical.length} tone="alert" sub="Auto-drafted for dispatch" />
+        <AlertSummaryTile label="Low / Reorder" count={low.length} tone="warning" sub="Queued for end-of-day" />
+        <AlertSummaryTile label="Overstock" count={overstock.length} tone="info" sub="Ordering suppressed" />
+        <AlertSummaryTile label="Expiring / Expired" count={expiry.length} tone="warning" sub="Review batches" />
+      </div>
+
+      {critical.length > 0 && (
+        <AlertGroup
+          title="Critical Low"
+          tone="alert"
+          description="Quantity at or below the critical threshold. Auto-drafted for immediate dispatch."
+          rows={critical}
+          onAcknowledge={onAcknowledge}
+          onViewOrder={onViewOrder}
+          onViewItem={onViewItem}
+          onManageBatches={onManageBatches}
+        />
+      )}
+      {low.length > 0 && (
+        <AlertGroup
+          title="Low / Reorder"
+          tone="warning"
+          description="Quantity at or below the reorder threshold. Queued for end-of-day dispatch."
+          rows={low}
+          onAcknowledge={onAcknowledge}
+          onViewOrder={onViewOrder}
+          onViewItem={onViewItem}
+          onManageBatches={onManageBatches}
+        />
+      )}
+      {overstock.length > 0 && (
+        <AlertGroup
+          title="Overstock"
+          tone="info"
+          description="Quantity above the maximum. Ordering is suppressed — review consumption or adjust the threshold."
+          rows={overstock}
+          onAcknowledge={onAcknowledge}
+          onViewOrder={onViewOrder}
+          onViewItem={onViewItem}
+          onManageBatches={onManageBatches}
+        />
+      )}
+      {expiry.length > 0 && (
+        <AlertGroup
+          title="Expiring / Expired"
+          tone="warning"
+          description="Batches approaching or past their expiration date. Review for use or physical disposal."
+          rows={expiry}
+          onAcknowledge={onAcknowledge}
+          onViewOrder={onViewOrder}
+          onViewItem={onViewItem}
+          onManageBatches={onManageBatches}
+        />
+      )}
+    </div>
+  );
+}
+
+interface AlertGroupProps extends Omit<AlertsViewProps, 'rows'> {
+  title: string;
+  tone: AlertTone;
+  description: string;
+  rows: InventoryRow[];
+}
+
+function AlertGroup({
+  title,
+  tone,
+  description,
+  rows,
+  onAcknowledge,
+  onViewOrder,
+  onViewItem,
+  onManageBatches,
+}: AlertGroupProps) {
+  const s = ALERT_TONE_STYLES[tone];
+  return (
+    <section>
+      <div className={`flex items-center gap-2 border-l-2 ${s.bar} pl-3`}>
+        <p className={`text-xs font-bold uppercase tracking-wider ${s.title}`}>{title}</p>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${s.badge}`}>{rows.length}</span>
+      </div>
+      <p className="mb-3 mt-1.5 pl-4 text-[11px] text-clinical-500">{description}</p>
+      <div className="space-y-2">
+        {rows.map(row => (
+          <AlertRowCard
+            key={row.id}
+            row={row}
+            onAcknowledge={onAcknowledge}
+            onViewOrder={onViewOrder}
+            onViewItem={onViewItem}
+            onManageBatches={onManageBatches}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AlertRowCard({
+  row,
+  onAcknowledge,
+  onViewOrder,
+  onViewItem,
+  onManageBatches,
+}: {
+  row: InventoryRow;
+} & Omit<AlertsViewProps, 'rows'>) {
+  const primary = (() => {
+    if (row.expiry === 'expired' || row.expiry === 'expiring') {
+      return { label: 'Review batches', onClick: () => onManageBatches(row) };
+    }
+    if (row.activeAlert?.severity === 'overstock') {
+      return { label: 'View deductions', onClick: () => onViewItem(row) };
+    }
+    if (row.linkedOrder) {
+      const orderId = row.linkedOrder.id;
+      switch (row.linkedOrder.status) {
+        case 'being_delivered':
+          return { label: 'Confirm receipt', onClick: () => onViewOrder(orderId) };
+        case 'unclear':
+          return { label: 'Classify response', onClick: () => onViewOrder(orderId) };
+        case 'unavailable':
+        case 'no_response':
+          return { label: 'Handle escalation', onClick: () => onViewOrder(orderId) };
+        default:
+          return { label: 'View order', onClick: () => onViewOrder(orderId) };
+      }
+    }
+    return { label: 'View item', onClick: () => onViewItem(row) };
+  })();
+
+  return (
+    <div className="flex items-center gap-4 rounded-xl border border-clinical-200 bg-white px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="truncate text-sm font-semibold text-clinical-900">{row.name}</p>
+          <StatusBadge status={row.stock} />
+        </div>
+        <p className="mt-1 text-[11px] text-clinical-400">
+          {row.category} · {row.id}
+        </p>
+        <p className="mt-1.5 truncate text-xs text-clinical-600">{row.systemAction}</p>
+      </div>
+      <div className="shrink-0 text-right">
+        <p className="text-lg font-bold leading-none text-clinical-900">
+          {row.quantity}
+          <span className="ml-1 text-xs font-normal text-clinical-400">/ {row.max}</span>
+        </p>
+        <p className="mt-1 text-[10px] text-clinical-400">{row.unit}</p>
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1.5">
+        <button
+          onClick={primary.onClick}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-primary-700 hover:text-primary-900"
+        >
+          {primary.label} <IconChevronRight className="h-3 w-3" />
+        </button>
+        {row.activeAlert && (
+          <button
+            onClick={() => onAcknowledge(row.activeAlert!.id)}
+            className="inline-flex items-center gap-1 rounded-md border border-warning-200 bg-warning-50 px-2 py-0.5 text-[10px] font-semibold text-warning-700 hover:bg-warning-100 transition"
+          >
+            <IconBell className="h-3 w-3" />
+            Acknowledge
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -357,7 +670,6 @@ function ItemDetails({ item }: { item: InventoryRow }) {
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [deductionLog, historyRange, item.id]);
 
-  /** Unique procedures appearing in the current window, with usage totals. */
   const procedureBreakdown = useMemo(() => {
     const map = new Map<string, number>();
     usageEntries.forEach(entry => {
@@ -387,7 +699,6 @@ function ItemDetails({ item }: { item: InventoryRow }) {
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-6">
-      {/* Section 1 — Live stock + thresholds */}
       <section className="border-b border-clinical-200 pb-7">
         <p className="mb-5 font-semibold text-clinical-900">Stock &amp; thresholds</p>
 
@@ -412,7 +723,6 @@ function ItemDetails({ item }: { item: InventoryRow }) {
         </dl>
       </section>
 
-      {/* Section 2 — Supplier routing (read-only) */}
       <section className="border-b border-clinical-200 py-7">
         <p className="mb-4 font-semibold text-clinical-900">Supplier routing</p>
         <dl className="grid grid-cols-1 gap-3 text-sm">
@@ -436,7 +746,6 @@ function ItemDetails({ item }: { item: InventoryRow }) {
         </dl>
       </section>
 
-      {/* Section 3 — Deduction history */}
       <section className="pt-7">
         <p className="mb-4 font-semibold text-clinical-900">Deduction history</p>
 
@@ -448,7 +757,6 @@ function ItemDetails({ item }: { item: InventoryRow }) {
           </div>
         </div>
 
-        {/* Range toggle */}
         <div className="mt-4 inline-flex rounded-lg border border-clinical-200 bg-white p-0.5">
           {([7, 30, 90] as const).map(range => (
             <button
@@ -466,7 +774,6 @@ function ItemDetails({ item }: { item: InventoryRow }) {
           ))}
         </div>
 
-        {/* Procedure filter */}
         {procedureBreakdown.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             <button
@@ -497,7 +804,6 @@ function ItemDetails({ item }: { item: InventoryRow }) {
           </div>
         )}
 
-        {/* Entries list */}
         {filteredEntries.length > 0 ? (
           <div className="mt-4 divide-y divide-clinical-100 rounded-xl border border-clinical-200">
             {filteredEntries.slice(0, 20).map(entry => (
@@ -546,7 +852,6 @@ function ItemDrawer({ item, initialMode = 'view', onSave, onClose }: ItemDrawerP
 
   const [editing, setEditing] = useState(isNew || initialMode === 'edit');
 
-  // Form state — only fields this module owns.
   const [name, setName] = useState(source?.name ?? '');
   const [category, setCategory] = useState(source?.category ?? 'Restorative');
   const [unit, setUnit] = useState(source?.unit ?? 'unit');
@@ -591,7 +896,6 @@ function ItemDrawer({ item, initialMode = 'view', onSave, onClose }: ItemDrawerP
       name: name.trim(),
       category,
       unit,
-      // Preserved from source — not editable in this drawer.
       unitCost: source?.unitCost ?? 0,
       supplierId: source?.supplierId ?? suppliers[0]?.id ?? 'S01',
       backupSupplierIds: source?.backupSupplierIds ?? [],
@@ -669,7 +973,6 @@ function ItemDrawer({ item, initialMode = 'view', onSave, onClose }: ItemDrawerP
               </div>
             )}
 
-            {/* Identity */}
             <section className="border-b border-clinical-200 pb-7">
               <p className="mb-5 font-semibold text-clinical-900">Item identity</p>
               <div className="grid grid-cols-2 gap-4">
@@ -703,7 +1006,6 @@ function ItemDrawer({ item, initialMode = 'view', onSave, onClose }: ItemDrawerP
               </div>
             </section>
 
-            {/* Thresholds */}
             <section className="py-7">
               <p className="mb-4 font-semibold text-clinical-900">Alert thresholds</p>
               <p className="mb-4 text-xs leading-relaxed text-clinical-400">
@@ -740,7 +1042,6 @@ function ItemDrawer({ item, initialMode = 'view', onSave, onClose }: ItemDrawerP
               </div>
             </section>
 
-            {/* Supplier routing note */}
             <section className="rounded-xl border border-clinical-100 bg-clinical-50/60 p-3.5">
               <p className="text-[11px] leading-relaxed text-clinical-500">
                 Primary and backup supplier assignments are not editable from this drawer.
@@ -894,7 +1195,6 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
       </div>
 
       <div className="flex-1 divide-y divide-clinical-200 overflow-y-auto px-6 py-6">
-        {/* Add batch */}
         {!showAddBatch ? (
           <div className="pb-6">
             <button
@@ -1110,9 +1410,10 @@ function DeleteItemConfirm({
 
 interface InventoryProps {
   initialEditItemName?: string | null;
+  onNavigateToOrder?: (orderId: string) => void;
 }
 
-export default function Inventory({ initialEditItemName }: InventoryProps = {}) {
+export default function Inventory({ initialEditItemName, onNavigateToOrder }: InventoryProps = {}) {
   const pageSize = 10;
   const {
     inventory,
@@ -1126,6 +1427,7 @@ export default function Inventory({ initialEditItemName }: InventoryProps = {}) 
     removeInventoryItem,
   } = useClinic();
 
+  const [primaryView, setPrimaryView] = useState<PrimaryView>('stock');
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -1156,6 +1458,12 @@ export default function Inventory({ initialEditItemName }: InventoryProps = {}) 
   const rangeStart = filteredItems.length === 0 ? 0 : pageStart + 1;
   const rangeEnd = Math.min(pageStart + pageSize, filteredItems.length);
 
+  // Counts used by the primary tabs.
+  const unacknowledgedCount = inventoryAlertLog.filter(a => !a.acknowledged).length;
+  const totalAlertItems = connectedInventoryRows.filter(r =>
+    r.stock !== 'normal' || r.expiry === 'expiring' || r.expiry === 'expired'
+  ).length;
+
   useEffect(() => {
     setCurrentPage(1);
   }, [filter, query]);
@@ -1164,7 +1472,10 @@ export default function Inventory({ initialEditItemName }: InventoryProps = {}) 
   useEffect(() => {
     if (!initialEditItemName) return;
     const item = connectedInventoryRows.find(row => row.name === initialEditItemName);
-    if (item) setItemDrawer({ kind: 'edit', item });
+    if (item) {
+      setPrimaryView('stock');
+      setItemDrawer({ kind: 'edit', item });
+    }
   }, [connectedInventoryRows, initialEditItemName]);
 
   useEffect(() => {
@@ -1221,167 +1532,218 @@ export default function Inventory({ initialEditItemName }: InventoryProps = {}) 
         </div>
       </div>
 
-      <div className="mb-5 flex items-center gap-3">
-        <div className="relative max-w-2xl flex-1">
-          <IconSearch className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-clinical-400" />
-          <input
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            placeholder="Search item, category, batch, supplier..."
-            className="w-full rounded-full border border-clinical-200 bg-white py-3 pl-12 pr-4 text-sm text-clinical-800 shadow-sm outline-none transition placeholder:text-clinical-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
-          />
-        </div>
+      {/* Primary tabs: Stock / Alerts */}
+      <div className="mb-6 inline-flex rounded-lg border border-clinical-200 bg-white p-0.5">
         <button
-          onClick={() => setItemDrawer({ kind: 'new' })}
-          className="flex items-center gap-2 rounded-lg bg-primary-700 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-primary-800"
+          onClick={() => setPrimaryView('stock')}
+          className={`inline-flex items-center gap-2 rounded-md px-3.5 py-2 text-xs font-semibold transition ${
+            primaryView === 'stock'
+              ? 'bg-clinical-800 text-white'
+              : 'text-clinical-600 hover:bg-clinical-50 hover:text-clinical-800'
+          }`}
         >
-          <IconPlus className="h-4 w-4" /> Add Item
+          <IconPackage className="h-4 w-4" /> Stock
+        </button>
+        <button
+          onClick={() => setPrimaryView('alerts')}
+          className={`inline-flex items-center gap-2 rounded-md px-3.5 py-2 text-xs font-semibold transition ${
+            primaryView === 'alerts'
+              ? 'bg-clinical-800 text-white'
+              : 'text-clinical-600 hover:bg-clinical-50 hover:text-clinical-800'
+          }`}
+        >
+          <IconBell className="h-4 w-4" /> Alerts
+          {unacknowledgedCount > 0 && (
+            <span className={`ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold ${
+              primaryView === 'alerts'
+                ? 'bg-white/20 text-white'
+                : 'bg-warning-100 text-warning-800'
+            }`}>
+              {unacknowledgedCount}
+            </span>
+          )}
         </button>
       </div>
 
-      <div className="mb-4 flex items-center gap-1 border-b border-clinical-200">
-        {tabs.map(tab => {
-          const active = filter === tab.id;
-          const hazard = tab.id === 'expired';
-          return (
+      {/* Stock view */}
+      {primaryView === 'stock' && (
+        <>
+          <div className="mb-5 flex items-center gap-3">
+            <div className="relative max-w-2xl flex-1">
+              <IconSearch className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-clinical-400" />
+              <input
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder="Search item, category, batch, supplier..."
+                className="w-full rounded-full border border-clinical-200 bg-white py-3 pl-12 pr-4 text-sm text-clinical-800 shadow-sm outline-none transition placeholder:text-clinical-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+              />
+            </div>
             <button
-              key={tab.id}
-              onClick={() => setFilter(tab.id)}
-              className={`relative px-4 py-3 text-xs font-semibold transition ${
-                active
-                  ? hazard ? 'text-alert-700' : 'text-primary-800'
-                  : hazard ? 'text-alert-600 hover:bg-alert-50' : 'text-clinical-500 hover:text-clinical-800'
-              }`}
+              onClick={() => setItemDrawer({ kind: 'new' })}
+              className="flex items-center gap-2 rounded-lg bg-primary-700 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-primary-800"
             >
-              {tab.label} ({tab.count})
-              {active && <span className={`absolute inset-x-2 bottom-0 h-0.5 ${hazard ? 'bg-alert-600' : 'bg-primary-700'}`} />}
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="overflow-visible rounded-xl border border-clinical-200 bg-white shadow-sm">
-        <table className="w-full table-auto text-left text-sm">
-          <thead>
-            <tr className="border-b border-clinical-200 bg-clinical-50/80 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
-              <th className="min-w-44 px-5 py-3.5">Item</th>
-              <th className="min-w-28 px-4 py-3.5">Usable Qty</th>
-              <th className="min-w-44 px-4 py-3.5">Expiry</th>
-              <th className="min-w-32 px-4 py-3.5">Stock Status</th>
-              <th className="min-w-60 px-4 py-3.5">System Action</th>
-              <th className="sticky right-0 w-12 bg-clinical-50 px-3 py-3.5">
-                <span className="sr-only">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-clinical-100">
-            {visibleItems.map(item => (
-              <tr key={item.id} className="group transition hover:bg-clinical-50/60">
-                <td className="px-5 py-5 align-top">
-                  <p className="font-semibold text-clinical-900">{item.name}</p>
-                  <p className="mt-1 text-xs text-clinical-400">{item.category} · {item.id}</p>
-                </td>
-                <td className="px-4 py-5 align-top">
-                  <p className="text-lg font-bold leading-none text-clinical-900">
-                    {item.quantity} <span className="text-sm font-normal text-clinical-400">/ {item.max}</span>
-                  </p>
-                  <p className="mt-2 text-xs text-clinical-400">{item.unit}</p>
-                </td>
-                <td className="px-4 py-5 align-top">
-                  <ExpiryCell item={item} />
-                </td>
-                <td className="px-4 py-5 align-top">
-                  <StatusBadge status={item.stock} />
-                </td>
-                <td className="px-4 py-5 align-top">
-                  <SystemAction
-                    item={item}
-                    onManage={() => setBatchItem(item)}
-                    onAcknowledge={() => item.activeAlert && acknowledgeAlert(item.activeAlert.id)}
-                  />
-                </td>
-                <td className={`sticky right-0 bg-white px-3 py-5 align-top transition group-hover:bg-clinical-50 ${menuId === item.id ? 'z-40' : 'z-10'}`}>
-                  <div className="relative" data-inventory-menu>
-                    <button
-                      onClick={() => setMenuId(menuId === item.id ? null : item.id)}
-                      aria-label={`Actions for ${item.name}`}
-                      className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800"
-                    >
-                      <IconMore className="h-5 w-5" />
-                    </button>
-                    {menuId === item.id && (
-                      <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
-                        <button
-                          onClick={() => { setItemDrawer({ kind: 'view', item }); setMenuId(null); }}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
-                        >
-                          <IconSettings className="h-4 w-4 shrink-0 text-clinical-500" />
-                          View Details
-                        </button>
-                        <button
-                          onClick={() => { setItemDrawer({ kind: 'edit', item }); setMenuId(null); }}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
-                        >
-                          <IconPencil className="h-4 w-4 shrink-0 text-clinical-500" />
-                          Edit Configuration
-                        </button>
-                        <button
-                          onClick={() => { setBatchItem(item); setMenuId(null); }}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
-                        >
-                          <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" />
-                          Manage Batches
-                        </button>
-                        <div className="my-1 border-t border-clinical-100" />
-                        <button
-                          onClick={() => { setDeleteTarget(item); setMenuId(null); }}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-alert-700 hover:bg-alert-50"
-                        >
-                          <IconTrash className="h-4 w-4 shrink-0 text-alert-500" />
-                          Delete Item
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {visibleItems.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-6 py-16 text-center">
-                  <IconSearch className="mx-auto h-6 w-6 text-clinical-300" />
-                  <p className="mt-3 text-sm font-medium text-clinical-700">No inventory items found</p>
-                  <p className="mt-1 text-xs text-clinical-400">Try another search or filter.</p>
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-        <div className="flex items-center justify-between border-t border-clinical-100 px-5 py-3">
-          <p className="text-xs text-clinical-400">
-            {inventoryAlertLog.filter(a => !a.acknowledged).length} open alert{inventoryAlertLog.filter(a => !a.acknowledged).length === 1 ? '' : 's'} across inventory
-          </p>
-          <div className="flex items-center gap-3 text-xs text-clinical-500">
-            <button
-              onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
-              disabled={currentPage === 1}
-              aria-label="Previous page"
-              className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
-            >
-              <IconChevronRight className="h-4 w-4 rotate-180" />
-            </button>
-            <span>{rangeStart}-{rangeEnd} of {filteredItems.length}</span>
-            <button
-              onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
-              disabled={currentPage === totalPages}
-              aria-label="Next page"
-              className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
-            >
-              <IconChevronRight className="h-4 w-4" />
+              <IconPlus className="h-4 w-4" /> Add Item
             </button>
           </div>
-        </div>
-      </div>
+
+          <div className="mb-4 flex items-center gap-1 border-b border-clinical-200">
+            {tabs.map(tab => {
+              const active = filter === tab.id;
+              const hazard = tab.id === 'expired';
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setFilter(tab.id)}
+                  className={`relative px-4 py-3 text-xs font-semibold transition ${
+                    active
+                      ? hazard ? 'text-alert-700' : 'text-primary-800'
+                      : hazard ? 'text-alert-600 hover:bg-alert-50' : 'text-clinical-500 hover:text-clinical-800'
+                  }`}
+                >
+                  {tab.label} ({tab.count})
+                  {active && <span className={`absolute inset-x-2 bottom-0 h-0.5 ${hazard ? 'bg-alert-600' : 'bg-primary-700'}`} />}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="overflow-visible rounded-xl border border-clinical-200 bg-white shadow-sm">
+            <table className="w-full table-auto text-left text-sm">
+              <thead>
+                <tr className="border-b border-clinical-200 bg-clinical-50/80 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
+                  <th className="min-w-44 px-5 py-3.5">Item</th>
+                  <th className="min-w-28 px-4 py-3.5">Usable Qty</th>
+                  <th className="min-w-44 px-4 py-3.5">Expiry</th>
+                  <th className="min-w-32 px-4 py-3.5">Stock Status</th>
+                  <th className="min-w-64 px-4 py-3.5">System Action</th>
+                  <th className="sticky right-0 w-12 bg-clinical-50 px-3 py-3.5">
+                    <span className="sr-only">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-clinical-100">
+                {visibleItems.map(item => (
+                  <tr key={item.id} className="group transition hover:bg-clinical-50/60">
+                    <td className="px-5 py-5 align-top">
+                      <p className="font-semibold text-clinical-900">{item.name}</p>
+                      <p className="mt-1 text-xs text-clinical-400">{item.category} · {item.id}</p>
+                    </td>
+                    <td className="px-4 py-5 align-top">
+                      <p className="text-lg font-bold leading-none text-clinical-900">
+                        {item.quantity} <span className="text-sm font-normal text-clinical-400">/ {item.max}</span>
+                      </p>
+                      <p className="mt-2 text-xs text-clinical-400">{item.unit}</p>
+                    </td>
+                    <td className="px-4 py-5 align-top">
+                      <ExpiryCell item={item} />
+                    </td>
+                    <td className="px-4 py-5 align-top">
+                      <StatusBadge status={item.stock} />
+                    </td>
+                    <td className="px-4 py-5 align-top">
+                      <SystemAction
+                        item={item}
+                        onManage={() => setBatchItem(item)}
+                        onAcknowledge={() => item.activeAlert && acknowledgeAlert(item.activeAlert.id)}
+                        onViewOrder={(orderId) => onNavigateToOrder?.(orderId)}
+                        onViewDeductions={() => setItemDrawer({ kind: 'view', item })}
+                      />
+                    </td>
+                    <td className={`sticky right-0 bg-white px-3 py-5 align-top transition group-hover:bg-clinical-50 ${menuId === item.id ? 'z-40' : 'z-10'}`}>
+                      <div className="relative" data-inventory-menu>
+                        <button
+                          onClick={() => setMenuId(menuId === item.id ? null : item.id)}
+                          aria-label={`Actions for ${item.name}`}
+                          className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800"
+                        >
+                          <IconMore className="h-5 w-5" />
+                        </button>
+                        {menuId === item.id && (
+                          <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
+                            <button
+                              onClick={() => { setItemDrawer({ kind: 'view', item }); setMenuId(null); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
+                            >
+                              <IconSettings className="h-4 w-4 shrink-0 text-clinical-500" />
+                              View Details
+                            </button>
+                            <button
+                              onClick={() => { setItemDrawer({ kind: 'edit', item }); setMenuId(null); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
+                            >
+                              <IconPencil className="h-4 w-4 shrink-0 text-clinical-500" />
+                              Edit Configuration
+                            </button>
+                            <button
+                              onClick={() => { setBatchItem(item); setMenuId(null); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50"
+                            >
+                              <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" />
+                              Manage Batches
+                            </button>
+                            <div className="my-1 border-t border-clinical-100" />
+                            <button
+                              onClick={() => { setDeleteTarget(item); setMenuId(null); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-alert-700 hover:bg-alert-50"
+                            >
+                              <IconTrash className="h-4 w-4 shrink-0 text-alert-500" />
+                              Delete Item
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {visibleItems.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-16 text-center">
+                      <IconSearch className="mx-auto h-6 w-6 text-clinical-300" />
+                      <p className="mt-3 text-sm font-medium text-clinical-700">No inventory items found</p>
+                      <p className="mt-1 text-xs text-clinical-400">Try another search or filter.</p>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            <div className="flex items-center justify-between border-t border-clinical-100 px-5 py-3">
+              <p className="text-xs text-clinical-400">
+                {unacknowledgedCount} open alert{unacknowledgedCount === 1 ? '' : 's'} across inventory
+              </p>
+              <div className="flex items-center gap-3 text-xs text-clinical-500">
+                <button
+                  onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
+                  disabled={currentPage === 1}
+                  aria-label="Previous page"
+                  className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
+                >
+                  <IconChevronRight className="h-4 w-4 rotate-180" />
+                </button>
+                <span>{rangeStart}-{rangeEnd} of {filteredItems.length}</span>
+                <button
+                  onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
+                  disabled={currentPage === totalPages}
+                  aria-label="Next page"
+                  className="rounded p-1 text-clinical-500 transition hover:bg-clinical-100 hover:text-clinical-800 disabled:cursor-not-allowed disabled:text-clinical-300"
+                >
+                  <IconChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Alerts view */}
+      {primaryView === 'alerts' && (
+        <AlertsView
+          rows={connectedInventoryRows}
+          onAcknowledge={acknowledgeAlert}
+          onViewOrder={(id) => onNavigateToOrder?.(id)}
+          onViewItem={(row) => setItemDrawer({ kind: 'view', item: row })}
+          onManageBatches={(row) => setBatchItem(row)}
+        />
+      )}
 
       {itemDrawer && (
         <ItemDrawer

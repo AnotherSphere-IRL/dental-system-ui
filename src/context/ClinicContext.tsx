@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
 import type { PaymentMethod } from '../constants/paymentMethods';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -965,7 +965,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // ── Inventory item CRUD + batch discard ────────────────
+  // ── Inventory item CRUD + batch discard ─────────────────────
 
   const saveInventoryItem = (item: InventoryItem) => {
     setInventory(prev => {
@@ -1057,6 +1057,28 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       `Structured PO document generated and saved as ${order.poRef}.txt.`);
   };
 
+  // ── Refs mirroring state read by the M18 watcher ─────────────
+  //
+  // The M18 watcher effect is triggered by `inventory` changes only, but
+  // reads `inventoryAlertLog` and `orders` to decide whether an alert or
+  // an order already exists for a given item. Reading those directly from
+  // the effect closure risks stale values when the effect fires before a
+  // pending state update has flushed — which can produce duplicate alerts
+  // and duplicate auto-drafted POs. We mirror them into refs updated by
+  // dedicated sync effects declared BEFORE the watcher, so React runs the
+  // sync effects first on every commit and the watcher always sees the
+  // latest values without needing those states in its dependency array.
+  const inventoryAlertLogRef = useRef(inventoryAlertLog);
+  const ordersRef = useRef(orders);
+
+  useEffect(() => {
+    inventoryAlertLogRef.current = inventoryAlertLog;
+  }, [inventoryAlertLog]);
+
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
+
   // ── Effects ──────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1076,9 +1098,9 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     inventory.forEach(item => {
       const status = getStockStatus(item);
       if (status === 'ok') { resolvedItemIds.push(item.id); return; }
-      const alreadyAlerted = inventoryAlertLog.some(a => a.itemId === item.id && !a.acknowledged && a.severity === status);
+      const alreadyAlerted = inventoryAlertLogRef.current.some(a => a.itemId === item.id && !a.acknowledged && a.severity === status);
       if (alreadyAlerted) return;
-      const hasActiveOrder = orders.some(o => o.itemId === item.id && !['completed', 'cancelled', 'unavailable'].includes(o.status));
+      const hasActiveOrder = ordersRef.current.some(o => o.itemId === item.id && !['completed', 'cancelled', 'unavailable'].includes(o.status));
       if (status !== 'overstock' && hasActiveOrder) return;
 
       if (status === 'overstock') {
