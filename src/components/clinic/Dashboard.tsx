@@ -535,6 +535,9 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
         </div>
       )}
 
+      {/* Expiry Alerts — M19 output */}
+      <ExpiryAlertsPanel onNavigate={() => onNavigate('inventory')} />
+
       {/* Income summary — now fully computed from payments */}
       <div className="bg-white rounded-xl border border-clinical-200 p-5">
         <div className="flex items-center justify-between mb-4">
@@ -570,6 +573,110 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       </div>
 
       <DemoTriggers />
+    </div>
+  );
+}
+
+// ── M19 Expiry Alerts Panel ───────────────────────────────────
+
+interface ExpiryAlertEntry {
+  itemId: string;
+  itemName: string;
+  unit: string;
+  expiredCount: number;
+  expiringCount: number;
+  expiredQty: number;
+  expiringQty: number;
+  soonestDays: number;
+}
+
+function ExpiryAlertsPanel({ onNavigate }: { onNavigate: () => void }) {
+  const { inventory, isExpired, isExpiringSoon, expiryAlertDays } = useClinic();
+
+  const alerts = useMemo<ExpiryAlertEntry[]>(() => {
+    const list: ExpiryAlertEntry[] = [];
+    inventory.forEach(item => {
+      const expired = item.batches.filter(b => isExpired(b.expiry));
+      const expiring = item.batches.filter(b => isExpiringSoon(b.expiry));
+      if (expired.length === 0 && expiring.length === 0) return;
+
+      const combined = [...expired, ...expiring];
+      const soonest = combined.reduce((a, b) =>
+        new Date(a.expiry) < new Date(b.expiry) ? a : b,
+      );
+      const soonestDays = Math.ceil(
+        (new Date(soonest.expiry).getTime() - Date.now()) / 86400000,
+      );
+
+      list.push({
+        itemId: item.id,
+        itemName: item.name,
+        unit: item.unit,
+        expiredCount: expired.length,
+        expiringCount: expiring.length,
+        expiredQty: expired.reduce((s, b) => s + b.qty, 0),
+        expiringQty: expiring.reduce((s, b) => s + b.qty, 0),
+        soonestDays,
+      });
+    });
+    return list.sort((a, b) => a.soonestDays - b.soonestDays);
+  }, [inventory, isExpired, isExpiringSoon]);
+
+  if (alerts.length === 0) return null;
+
+  const withExpired = alerts.filter(a => a.expiredCount > 0).length;
+  const onlyExpiring = alerts.filter(a => a.expiredCount === 0).length;
+
+  return (
+    <div className="bg-white rounded-xl border border-warning-100 overflow-hidden">
+      <div className="px-4 py-3 bg-warning-50 border-b border-warning-100 flex items-center gap-2">
+        <IconClock className="w-4 h-4 text-warning-600" />
+        <h2 className="text-sm font-semibold text-warning-700">Expiry Alerts</h2>
+        <span className="ml-auto text-[10px] font-semibold text-warning-600">
+          {alerts.length} item{alerts.length > 1 ? 's' : ''} · alert window {expiryAlertDays}d
+        </span>
+      </div>
+      <div className="divide-y divide-clinical-50 max-h-64 overflow-y-auto">
+        {alerts.map(a => (
+          <div key={a.itemId} className="px-4 py-3 flex items-start gap-3">
+            <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${
+              a.expiredCount > 0 ? 'bg-alert-500' : 'bg-warning-500'
+            }`} />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-clinical-800 truncate">{a.itemName}</p>
+              <p className="text-[10px] text-clinical-500 mt-0.5">
+                {a.expiredCount > 0 && (
+                  <>
+                    <span className="font-semibold text-alert-600">
+                      {a.expiredCount} expired ({a.expiredQty} {a.unit})
+                    </span>
+                    {a.expiringCount > 0 && ' · '}
+                  </>
+                )}
+                {a.expiringCount > 0 && (
+                  <span>
+                    {a.expiringCount} expiring ({a.expiringQty} {a.unit})
+                  </span>
+                )}
+              </p>
+            </div>
+            <span className="shrink-0 text-[10px] font-semibold text-clinical-500 whitespace-nowrap">
+              {a.soonestDays < 0 ? `${Math.abs(a.soonestDays)}d ago` : `${a.soonestDays}d`}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="px-4 py-2 border-t border-clinical-100 bg-clinical-50/60 flex items-center justify-between">
+        <p className="text-[10px] text-clinical-400">
+          {withExpired} item{withExpired === 1 ? '' : 's'} with expired stock · {onlyExpiring} expiring soon
+        </p>
+        <button
+          onClick={onNavigate}
+          className="text-[10px] font-semibold text-primary-600 hover:text-primary-800 flex items-center gap-1"
+        >
+          Review in Inventory <IconChevronRight className="w-3 h-3" />
+        </button>
+      </div>
     </div>
   );
 }

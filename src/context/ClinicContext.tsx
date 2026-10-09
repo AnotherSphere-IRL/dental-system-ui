@@ -69,6 +69,14 @@ export interface SupplyOrder {
   confirmedAt?: string;
   receivedAt?: string;
   unitCost: number;
+  /**
+   * Epoch ms when the order entered the queue. Used by the dispatcher to
+   * decide whether a queued order belongs to today's end-of-day batch or
+   * must wait for the next one. Orders created before this field existed
+   * (seed data) leave it undefined and are treated as "old" — dispatchable
+   * as soon as the EOD hour has passed.
+   */
+  queuedAtMs?: number;
 }
 
 export interface Supplier {
@@ -191,16 +199,9 @@ export interface InventoryAlertLog {
   triggeredAt: string;
   acknowledged: boolean;
   acknowledgedAt?: string;
-  /** Who cleared the alert — the doctor via explicit ack, or the system via auto-resolution. */
   acknowledgedBy?: 'system' | 'doctor';
   linkedOrderId?: string;
   linkedNoteId?: string;
-  /**
-   * Populated on overstock alerts when the item has expired or expiring
-   * batches — surfaces the "overstock with expiry risk" condition from the
-   * M18 process doc, where the module is expected to weigh Module 19 data
-   * against overstock decisions.
-   */
   expiryRisk?: {
     expiringQty: number;
     expiredQty: number;
@@ -440,7 +441,8 @@ interface ClinicContextValue {
   saveInventoryItem: (item: InventoryItem) => void;
   removeInventoryItem: (itemId: string) => void;
   discardBatch: (itemId: string, batchNo: string) => void;
-  downloadPurchaseOrder: (orderId: string) => void;
+  /** Opens the purchase order in a new print window so the doctor can Save-as-PDF. */
+  printPurchaseOrder: (orderId: string) => void;
 }
 
 const ClinicContext = createContext<ClinicContextValue | null>(null);
@@ -487,10 +489,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     }, ...prev]);
   };
 
-  /**
-   * Append a single audit entry for the M18 trail. Trims to MAX_AUDIT_ENTRIES
-   * so long-running sessions don't grow memory unbounded.
-   */
   const addInventoryAudit = (
     actor: 'system' | 'doctor',
     action: InventoryAuditAction,
@@ -705,8 +703,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     return 'ok';
   };
 
-  // M17: StrictMode-safe deduction — compute new state from snapshot,
-  // never push to a side array from inside the setState updater.
   const deductInventory = (
     itemIds: string[],
     patientId: string,
@@ -828,6 +824,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       originalOrderId: orderId,
       createdAt: ts,
       updatedAt: ts,
+      queuedAtMs: Date.now(),
     };
     setOrders(prev => [
       ...prev.map(o => o.id === orderId ? {
@@ -844,18 +841,29 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       `Rerouted from ${target.poRef}. Queued for dispatch.`);
   };
 
+  /**
+   * Dispatch queued orders through the SMTP-style pipeline.
+   *
+   * In this demo the "send" is simulated — we don't have a real SMTP relay
+   * (SendGrid / Amazon SES) wired up, so the system logs a synthetic message
+   * id to `orderDispatchLog` and flips each order to `sent`. A production
+   * deployment would swap the log entries for real API calls here, keeping
+   * the surrounding status transition and handoff to M22 unchanged.
+   */
   const dispatchOrders = (orderIds: string[]) => {
     const targets = orders.filter(o => orderIds.includes(o.id) && o.status === 'queued');
     if (targets.length === 0) return;
     const ts = timestampNow();
     const logs: OrderDispatchLog[] = targets.map(o => {
       const supplier = suppliers.find(s => s.id === o.supplierId);
+      const recipientEmail = supplier?.email ?? 'unknown@example.com';
+      const recipientName = supplier?.name ?? o.supplierId;
       return {
         id: `DSP-${Date.now()}-${o.id}`,
         orderId: o.id,
         poRef: o.poRef,
-        recipientEmail: supplier?.email ?? 'unknown@example.com',
-        recipientName: supplier?.name ?? o.supplierId,
+        recipientEmail,
+        recipientName,
         messageId: `<${Math.random().toString(36).slice(2, 14)}@premierdental.ph>`,
         dispatchedAt: ts,
         deliveryStatus: 'sent',
@@ -865,10 +873,14 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       ? { ...o, status: 'sent' as OrderStatus, updatedAt: ts }
       : o));
     setOrderDispatchLog(prev => [...logs, ...prev]);
-    targets.forEach(o => {
+    targets.forEach((o, idx) => {
+      const log = logs[idx];
       const supplier = suppliers.find(s => s.id === o.supplierId);
-      appendTimeline(o.id, 'dispatched', 'system', 'PO dispatched via SMTP email',
-        `PDF PO emailed to ${supplier?.name ?? o.supplierId} (${supplier?.email ?? '-'}). Awaiting response.`);
+      const fallbackNote = !supplier
+        ? ' · WARNING: supplier record missing — email fell back to unknown@example.com'
+        : '';
+      appendTimeline(o.id, 'dispatched', 'system', 'PO dispatched via SMTP email (simulated)',
+        `PDF PO emailed to ${log.recipientName} (${log.recipientEmail}). Awaiting response.${fallbackNote}`);
     });
   };
 
@@ -1056,8 +1068,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // ── Inventory item CRUD + batch discard ─────────────────────
-
   const saveInventoryItem = (item: InventoryItem) => {
     const exists = inventory.find(i => i.id === item.id);
     setInventory(prev => {
@@ -1078,9 +1088,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
   const removeInventoryItem = (itemId: string) => {
     const item = inventory.find(i => i.id === itemId);
     setInventory(prev => prev.filter(i => i.id !== itemId));
-    // Cascade-clean the alert log and overstock notes so no orphans linger
-    // after the item is gone. The audit trail is intentionally preserved
-    // so history survives item deletion.
     setInventoryAlertLog(prev => prev.filter(a => a.itemId !== itemId));
     setOverstockReviewNotes(prev => prev.filter(n => n.itemId !== itemId));
     if (item) {
@@ -1119,70 +1126,137 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Mock PDF PO — generates a plain-text structured PO and triggers download.
-  const downloadPurchaseOrder = (orderId: string) => {
+  /**
+   * Open the purchase order in a dedicated print view. Browsers expose a
+   * "Save as PDF" destination in the print dialog, which produces a genuine
+   * PDF without pulling in a client-side PDF library (KISS-friendly).
+   */
+  const printPurchaseOrder = (orderId: string) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
     const supplier = suppliers.find(s => s.id === order.supplierId);
     const subtotal = order.qty * order.unitCost;
-    const lines = [
-      '═══════════════════════════════════════════════════════════',
-      '                     PURCHASE ORDER',
-      '                    Premier Dental Solutions PH',
-      '═══════════════════════════════════════════════════════════',
-      '',
-      `PO Reference:     ${order.poRef}`,
-      `Order Date:       ${order.createdAt}`,
-      `Order Status:     ${order.status.toUpperCase()}`,
-      order.originalOrderId ? `Rerouted From:    ${order.originalOrderId}` : '',
-      '',
-      '───────────────────────────────────────────────────────────',
-      'SUPPLIER',
-      '───────────────────────────────────────────────────────────',
-      `Company:          ${supplier?.name ?? order.supplierId}`,
-      `Contact Person:   ${supplier?.contactPerson ?? '—'}`,
-      `Email:            ${supplier?.email ?? '—'}`,
-      `Phone:            ${supplier?.phone ?? '—'}`,
-      `Payment Terms:    ${supplier?.paymentTerms ?? '—'}`,
-      `Lead Time:        ${supplier?.leadTimeDays ?? '—'} days`,
-      '',
-      '───────────────────────────────────────────────────────────',
-      'BILL TO',
-      '───────────────────────────────────────────────────────────',
-      'Premier Dental Solutions PH',
-      'Makati Branch',
-      'procurement@premierdental.ph',
-      '',
-      '───────────────────────────────────────────────────────────',
-      'LINE ITEMS',
-      '───────────────────────────────────────────────────────────',
-      `Item Name:        ${order.itemName}`,
-      `Internal SKU:     ${order.itemId}`,
-      `Quantity:         ${order.qty} ${order.unit}`,
-      `Unit Cost:        ₱${order.unitCost.toLocaleString()}`,
-      `Subtotal:         ₱${subtotal.toLocaleString()}`,
-      '',
-      '───────────────────────────────────────────────────────────',
-      `TOTAL AMOUNT:     ₱${subtotal.toLocaleString()}`,
-      '───────────────────────────────────────────────────────────',
-      '',
-      'This document was auto-generated by the Supply Ordering module (M20).',
-      'For inquiries, contact procurement@premierdental.ph.',
-      '',
-    ].filter(Boolean).join('\n');
 
-    const blob = new Blob([lines], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${order.poRef}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${order.poRef}</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: #1e293b;
+    max-width: 720px;
+    margin: 40px auto;
+    padding: 0 32px;
+    line-height: 1.5;
+  }
+  .header { text-align: center; border-bottom: 2px solid #0e7490; padding-bottom: 16px; margin-bottom: 28px; }
+  .header h1 { margin: 0 0 6px 0; font-size: 22px; letter-spacing: 3px; color: #0e7490; }
+  .header p { margin: 2px 0; font-size: 13px; color: #64748b; }
+  .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-bottom: 28px; }
+  .meta h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin: 0 0 10px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+  .meta dl { margin: 0; font-size: 13px; }
+  .meta dt { color: #64748b; font-size: 11px; margin-top: 8px; }
+  .meta dd { margin: 2px 0 0 0; color: #1e293b; font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 13px; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #e2e8f0; padding: 10px 8px; }
+  td { border-bottom: 1px solid #e2e8f0; padding: 12px 8px; }
+  td.num, th.num { text-align: right; }
+  tfoot td { border-bottom: none; border-top: 2px solid #0e7490; font-weight: 600; font-size: 14px; padding-top: 14px; }
+  tfoot td.num { color: #0e7490; }
+  .footer { margin-top: 44px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center; }
+  @media print {
+    body { margin: 0; padding: 24px; max-width: none; }
+    @page { size: A4; margin: 18mm; }
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>PURCHASE ORDER</h1>
+    <p><strong>Premier Dental Solutions PH</strong></p>
+    <p>Makati Branch · procurement@premierdental.ph</p>
+  </div>
 
-    appendTimeline(orderId, 'document', 'system', 'Purchase Order downloaded',
-      `Structured PO document generated and saved as ${order.poRef}.txt.`);
+  <div class="meta">
+    <div>
+      <h2>Order Details</h2>
+      <dl>
+        <dt>PO Reference</dt><dd>${order.poRef}</dd>
+        <dt>Order Date</dt><dd>${order.createdAt}</dd>
+        <dt>Status</dt><dd style="text-transform:capitalize">${order.status.replace('_', ' ')}</dd>
+        ${order.originalOrderId ? `<dt>Rerouted From</dt><dd>${order.originalOrderId}</dd>` : ''}
+      </dl>
+    </div>
+    <div>
+      <h2>Supplier</h2>
+      <dl>
+        <dt>Company</dt><dd>${supplier?.name ?? order.supplierId}</dd>
+        <dt>Contact Person</dt><dd>${supplier?.contactPerson ?? '—'}</dd>
+        <dt>Email</dt><dd>${supplier?.email ?? '—'}</dd>
+        <dt>Phone</dt><dd>${supplier?.phone ?? '—'}</dd>
+        <dt>Payment Terms</dt><dd>${supplier?.paymentTerms ?? '—'}</dd>
+        <dt>Lead Time</dt><dd>${supplier?.leadTimeDays ?? '—'} days</dd>
+      </dl>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th>SKU</th>
+        <th class="num">Quantity</th>
+        <th class="num">Unit Cost</th>
+        <th class="num">Subtotal</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>${order.itemName}</td>
+        <td>${order.itemId}</td>
+        <td class="num">${order.qty} ${order.unit}</td>
+        <td class="num">₱${order.unitCost.toLocaleString()}</td>
+        <td class="num">₱${subtotal.toLocaleString()}</td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="4">Total Amount</td>
+        <td class="num">₱${subtotal.toLocaleString()}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <div class="footer">
+    Auto-generated by Premier Dental Solutions PH — Supply Ordering module.<br />
+    For inquiries, contact procurement@premierdental.ph.
+  </div>
+
+  <script>
+    // Give the browser a frame to paint before opening the print dialog.
+    setTimeout(function () { window.print(); }, 250);
+  </script>
+</body>
+</html>`;
+
+    const printWindow = window.open('', '_blank', 'width=880,height=960');
+    if (!printWindow) {
+      // Popup blocked — fall back to opening the same HTML as a blob URL.
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } else {
+      printWindow.document.open();
+      printWindow.document.write(html);
+      printWindow.document.close();
+    }
+
+    appendTimeline(orderId, 'document', 'system', 'Purchase Order opened for PDF export',
+      `${order.poRef} opened in print view. Choose "Save as PDF" in the browser dialog.`);
   };
 
   // ── Refs mirroring state read by the M18 watcher ─────────────
@@ -1223,14 +1297,14 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     const newAudit: InventoryAuditEntry[] = [];
     const resolvedItemIds: string[] = [];
     const ts = timestampNow();
+    const nowMs = Date.now();
 
     inventory.forEach(item => {
       const status = getStockStatus(item);
       if (status === 'ok') { resolvedItemIds.push(item.id); return; }
 
       // "Highest severity wins" — skip if an unacknowledged alert of equal
-      // or higher severity already covers this item. This prevents a
-      // de-escalation (Critical → Low) from spawning a duplicate low alert.
+      // or higher severity already covers this item.
       const myRank = SEVERITY_RANK[status];
       const alreadyCovered = inventoryAlertLogRef.current.some(
         a => a.itemId === item.id && !a.acknowledged && SEVERITY_RANK[a.severity] >= myRank,
@@ -1241,8 +1315,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       // the pipeline. Terminal statuses (completed / cancelled) free the
       // item to draft fresh POs; escalated terminal states (unavailable /
       // no_response) intentionally hold the item until the doctor resolves
-      // them via Order Monitoring — avoiding an infinite draft-and-escalate
-      // loop against the same supplier.
+      // them via Order Monitoring.
       const hasUnresolvedOrder = ordersRef.current.some(
         o => o.itemId === item.id && !['completed', 'cancelled'].includes(o.status),
       );
@@ -1254,7 +1327,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
 
         // M18 × M19: check the item's batches so the review note reflects
         // any expiry risk on top of the overstock condition.
-        const nowMs = Date.now();
         let expiringQty = 0;
         let expiredQty = 0;
         let earliestExpiryDays: number | null = null;
@@ -1334,6 +1406,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
         status: 'queued',
         createdAt: ts,
         updatedAt: ts,
+        queuedAtMs: nowMs,
       });
       newAlerts.push({
         id: `ALRT-${Date.now()}-${item.id}`,
@@ -1402,15 +1475,33 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventory]);
 
-  // M20 — dispatch scheduler (checks current hour each tick; sends queued orders past EOD)
+  // M20 — dispatch scheduler.
+  //
+  // Dispatch rules per the process doc (§4.5):
+  //   • Critical + criticalImmediate → skip the batch, send now.
+  //   • Everything else → batch at the end-of-day hour. An order that
+  //     was queued *after* today's EOD hour (e.g. 19:00 with EOD=18) is
+  //     held until tomorrow's EOD, matching "end-of-day batch" semantics.
+  //
+  // Idempotency: dispatchOrders flips each order queued → sent, so a
+  // subsequent tick won't re-dispatch the same order even if this effect
+  // re-runs. No extra guard set needed.
   useEffect(() => {
-    const nowHour = new Date().getHours();
-    const eod = automationConfig.eodDispatchHour;
+    const nowDate = new Date();
+    const nowMs = nowDate.getTime();
+    const todayEod = new Date(nowDate);
+    todayEod.setHours(automationConfig.eodDispatchHour, 0, 0, 0);
+    const todayEodMs = todayEod.getTime();
+
     const toDispatch = orders.filter(o => {
       if (o.status !== 'queued') return false;
       const alert = inventoryAlertLog.find(a => a.linkedOrderId === o.id);
       if (alert?.severity === 'critical' && automationConfig.criticalImmediate) return true;
-      return nowHour >= eod;
+      // Batch window: only after today's EOD, and only for orders that
+      // existed before the EOD boundary.
+      if (nowMs < todayEodMs) return false;
+      if (o.queuedAtMs !== undefined && o.queuedAtMs > todayEodMs) return false;
+      return true;
     });
     if (toDispatch.length === 0) return;
     dispatchOrders(toDispatch.map(o => o.id));
@@ -1451,7 +1542,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       parseSupplierReply,
       automationConfig, setAutomationConfig,
       fireDemoTrigger,
-      saveInventoryItem, removeInventoryItem, discardBatch, downloadPurchaseOrder,
+      saveInventoryItem, removeInventoryItem, discardBatch, printPurchaseOrder,
     }}>
       {children}
     </ClinicContext.Provider>

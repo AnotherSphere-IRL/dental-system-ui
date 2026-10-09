@@ -287,7 +287,154 @@ function TimelineDrawer({
   );
 }
 
-// ── Invoice drawer (parity feature; content derived from order) ─
+// ── Purchase Order preview drawer ─────────────────────────────
+
+/**
+ * Renders the PO in the same visual style the printed output will use, so
+ * the doctor sees exactly what will be printed. The "Print / Save as PDF"
+ * button delegates to the browser's print dialog, which offers "Save as
+ * PDF" as a destination. Scoped print CSS in index.css hides the rest of
+ * the app so only `#po-print-region` appears on paper.
+ */
+function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void }) {
+  const { suppliers, logPurchaseOrderPrint } = useClinic();
+  const supplier = suppliers.find(s => s.id === order.supplierId);
+  const subtotal = order.qty * order.unitCost;
+
+  const handlePrint = () => {
+    logPurchaseOrderPrint(order.id);
+    // Defer so the timeline append commits before the browser freezes the
+    // page for the print snapshot.
+    setTimeout(() => window.print(), 50);
+  };
+
+  return (
+    <Overlay align="right" onClose={onClose}>
+      <aside className="relative flex h-full min-h-screen w-full max-w-2xl flex-col bg-white shadow-2xl">
+        {/* Drawer chrome — not part of the printed output */}
+        <div className="flex items-center gap-4 border-b border-clinical-200 px-6 py-5">
+          <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
+            <IconX className="h-5 w-5" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="font-display text-lg font-semibold text-clinical-900">Purchase Order Preview</p>
+            <p className="mt-0.5 truncate text-xs text-clinical-500">{order.poRef} · {supplier?.name ?? order.supplierId}</p>
+          </div>
+        </div>
+
+        {/* Print region — everything below gets printed */}
+        <div className="flex-1 overflow-y-auto">
+          <div id="po-print-region" className="px-10 py-10 text-clinical-900">
+            {/* Letterhead */}
+            <div className="border-b-2 border-primary-700 pb-4 text-center">
+              <p className="text-xl font-bold tracking-[0.2em] text-primary-700">PURCHASE ORDER</p>
+              <p className="mt-1.5 text-sm font-semibold text-clinical-900">Premier Dental Solutions PH</p>
+              <p className="mt-0.5 text-xs text-clinical-500">Makati Branch · procurement@premierdental.ph</p>
+            </div>
+
+            {/* Meta grid */}
+            <div className="mt-7 grid grid-cols-2 gap-8">
+              <div>
+                <p className="border-b border-clinical-200 pb-1 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
+                  Order Details
+                </p>
+                <dl className="mt-2 space-y-1.5">
+                  <PoRow label="PO Reference" value={order.poRef} />
+                  <PoRow label="Order Date" value={order.createdAt} />
+                  <PoRow label="Status" value={STATUS_LABELS[order.status]} />
+                  {order.originalOrderId && <PoRow label="Rerouted From" value={order.originalOrderId} />}
+                </dl>
+              </div>
+              <div>
+                <p className="border-b border-clinical-200 pb-1 text-[11px] font-semibold uppercase tracking-wider text-clinical-500">
+                  Supplier
+                </p>
+                <dl className="mt-2 space-y-1.5">
+                  <PoRow label="Company" value={supplier?.name ?? order.supplierId} />
+                  <PoRow label="Contact Person" value={supplier?.contactPerson ?? '—'} />
+                  <PoRow label="Email" value={supplier?.email ?? '—'} />
+                  <PoRow label="Phone" value={supplier?.phone ?? '—'} />
+                  <PoRow label="Payment Terms" value={supplier?.paymentTerms ?? '—'} />
+                  <PoRow label="Lead Time" value={supplier ? `${supplier.leadTimeDays} days` : '—'} />
+                </dl>
+              </div>
+            </div>
+
+            {/* Line items */}
+            <table className="mt-8 w-full text-sm">
+              <thead>
+                <tr className="border-b-2 border-clinical-200">
+                  <th className="py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Item</th>
+                  <th className="py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-clinical-500">SKU</th>
+                  <th className="py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Quantity</th>
+                  <th className="py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Unit Cost</th>
+                  <th className="py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-b border-clinical-100">
+                  <td className="py-3 font-medium text-clinical-900">{order.itemName}</td>
+                  <td className="py-3 font-mono text-xs text-clinical-600">{order.itemId}</td>
+                  <td className="py-3 text-right text-clinical-700">{order.qty} {order.unit}</td>
+                  <td className="py-3 text-right text-clinical-700">₱{order.unitCost.toLocaleString()}</td>
+                  <td className="py-3 text-right font-medium text-clinical-900">₱{subtotal.toLocaleString()}</td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={4} className="border-t-2 border-primary-700 pt-4 text-right text-sm font-semibold text-clinical-700">
+                    Total Amount
+                  </td>
+                  <td className="border-t-2 border-primary-700 pt-4 text-right text-base font-bold text-primary-700">
+                    ₱{subtotal.toLocaleString()}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+
+            {/* Footer */}
+            <div className="mt-12 border-t border-clinical-200 pt-4 text-center text-[11px] text-clinical-400">
+              <p>Auto-generated by Premier Dental Solutions PH — Supply Ordering module.</p>
+              <p className="mt-1">For inquiries, contact procurement@premierdental.ph.</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Drawer footer — not printed */}
+        <div className="flex items-center justify-between gap-3 border-t border-clinical-200 bg-white px-6 py-4 shadow-lg">
+          <p className="text-[11px] text-clinical-500">
+            Preview shown above. Print or save as PDF using your browser dialog.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="rounded-lg border border-clinical-200 bg-white px-4 py-2 text-xs font-semibold text-clinical-700 hover:bg-clinical-50"
+            >
+              Close
+            </button>
+            <button
+              onClick={handlePrint}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary-700 px-4 py-2 text-xs font-semibold text-white hover:bg-primary-800"
+            >
+              <IconPrinter className="h-4 w-4" /> Print / Save as PDF
+            </button>
+          </div>
+        </div>
+      </aside>
+    </Overlay>
+  );
+}
+
+function PoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="text-xs text-clinical-500">{label}</dt>
+      <dd className="text-right text-sm font-medium text-clinical-800">{value}</dd>
+    </div>
+  );
+}
+
+// ── Invoice drawer (completed orders only) ────────────────────
 
 interface InvoiceLine {
   item: InventoryItem;
@@ -304,7 +451,7 @@ function InvoiceDrawer({ order, inventory, onClose }: { order: SupplyOrder; inve
     ? [{ item: primary, quantity: order.qty, unitPrice: order.unitCost }]
     : [];
   const invoiceTotal = lines.reduce((total, line) => total + line.quantity * line.unitPrice, 0);
-  const invoiceDate = order.timestamp ?? order.createdAt;
+  const invoiceDate = order.createdAt;
 
   return (
     <Overlay align="right" onClose={onClose}>
@@ -543,7 +690,6 @@ export default function OrderMonitoring({
      orderDispatchLog,
      confirmReceived,
      classifyResponse,
-     downloadPurchaseOrder,
    } = useClinic();
 
   const [filter, setFilter] = useState<FilterTab>('all');
@@ -553,6 +699,7 @@ export default function OrderMonitoring({
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [receiveOrder, setReceiveOrder] = useState<SupplyOrder | null>(null);
   const [invoiceOrder, setInvoiceOrder] = useState<SupplyOrder | null>(null);
+  const [poOrder, setPoOrder] = useState<SupplyOrder | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
   const pageSize = 5;
 
@@ -570,7 +717,6 @@ export default function OrderMonitoring({
     onConsumeInitialOrderId?.();
   }, [initialOrderId, orders, onConsumeInitialOrderId]);
 
-  // Build display list with resolved supplier/item
   const displayOrders: DisplayOrder[] = useMemo(() => orders.map(order => ({
     order,
     supplier: suppliers.find(s => s.id === order.supplierId),
@@ -711,11 +857,6 @@ export default function OrderMonitoring({
                               <IconAlert className="h-3.5 w-3.5" /> Resolve dead end <IconChevronRight className="h-3.5 w-3.5" />
                             </button>
                           )}
-                          <button
-                            onClick={() => downloadPurchaseOrder(order.id)}
-                            className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-primary-700 hover:text-primary-900">
-                            <IconFileText className="h-3.5 w-3.5" /> Download PO <IconChevronRight className="h-3.5 w-3.5" />
-                          </button>
                           {order.status === 'unclear' && (
                             <div className="mt-3 flex items-center gap-1.5">
                               <span className="text-[10px] text-clinical-500 mr-1">Classify:</span>
@@ -731,6 +872,9 @@ export default function OrderMonitoring({
                         <button onClick={() => setMenuId(menuId === order.id ? null : order.id)} aria-label={`Actions for ${order.poRef}`} className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800"><IconMoreVertical className="h-5 w-5" /></button>
                         {menuId === order.id && (
                           <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
+                            <button onClick={() => { setPoOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                              <IconPrinter className="h-4 w-4 shrink-0 text-clinical-500" /> Preview purchase order
+                            </button>
                             {order.status === 'completed' && (
                               <button onClick={() => { setInvoiceOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                                 <IconFileText className="h-4 w-4 shrink-0 text-clinical-500" /> View invoice
@@ -769,6 +913,7 @@ export default function OrderMonitoring({
           onClose={() => { setTimelineOpen(false); setSelected(null); }}
         />
       )}
+      {poOrder && <PODrawer order={poOrder} onClose={() => setPoOrder(null)} />}
       {invoiceOrder && <InvoiceDrawer order={invoiceOrder} inventory={inventory} onClose={() => setInvoiceOrder(null)} />}
       {receiveOrder && (
         <ReceiveModal
