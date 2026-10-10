@@ -120,7 +120,21 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 4. Being delivered — one-click confirm receipt.
+    // 4. Reroute events — informational, but show the linked chain so the
+    //    doctor can trace what happened without opening the Orders view.
+    orders.filter(o => o.status === 'rerouted' && o.linkedOrderId).forEach(o => {
+      const child = orders.find(c => c.id === o.linkedOrderId);
+      items.push({
+        id: `reroute-${o.id}`,
+        severity: 'info',
+        title: `Rerouted · ${getSupplierName(o.supplierId)}`,
+        detail: `${o.poRef} → ${child ? getSupplierName(child.supplierId) : '—'}`,
+        actionLabel: 'View chain →',
+        onAction: () => onNavigate('orders'),
+      });
+    });
+
+    // 5. Being delivered — one-click confirm receipt.
     orders.filter(o => o.status === 'being_delivered').forEach(o => {
       items.push({
         id: `delivered-${o.id}`,
@@ -132,7 +146,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 5. Overstock review notes — need a doctor decision on threshold.
+    // 6. Overstock review notes — need a doctor decision on threshold.
     overstockReviewNotes.filter(n => n.status === 'open').forEach(n => {
       items.push({
         id: `overstock-${n.id}`,
@@ -144,9 +158,66 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
+    // 7. M18 §5 — Critical/Low stock alerts reach the dashboard. One entry
+    // per unacknowledged alert; the linked order's dispatch state is folded
+    // into the detail line so the doctor knows what the system already did.
+    inventoryAlertLog
+      .filter(a => !a.acknowledged && (a.severity === 'critical' || a.severity === 'low'))
+      .forEach(a => {
+        const order = a.linkedOrderId
+          ? orders.find(o => o.id === a.linkedOrderId)
+          : undefined;
+        const orderHint = order
+          ? order.status === 'queued'
+            ? ' · order queued'
+            : ' · PO sent'
+          : '';
+        items.push({
+          id: `stock-${a.id}`,
+          severity: a.severity === 'critical' ? 'alert' : 'warning',
+          title: `${a.severity === 'critical' ? 'Critical' : 'Low'} stock · ${a.itemName}`,
+          detail: `${a.qty} at threshold ${a.threshold}${orderHint}`,
+          actionLabel: 'View →',
+          onAction: () => onNavigate('inventory'),
+        });
+      });
+
+    // 8. Expiring / expired batches — M19 §5. One entry per item so a single
+    // supply with three expiring batches doesn't flood the queue. Expired
+    // dominates when both states exist on the same item.
+    inventory.forEach(item => {
+      const expiredBatches = item.batches.filter(b => isExpired(b.expiry));
+      const expiringBatches = item.batches.filter(b => isExpiringSoon(b.expiry));
+      if (expiredBatches.length === 0 && expiringBatches.length === 0) return;
+
+      const expiredCase = expiredBatches.length > 0;
+      const relevant = expiredCase ? expiredBatches : expiringBatches;
+      const totalQty = relevant.reduce((sum, b) => sum + b.qty, 0);
+      const earliest = relevant.reduce(
+        (min, b) => (new Date(b.expiry) < new Date(min) ? b.expiry : min),
+        relevant[0].expiry,
+      );
+      const daysLeft = Math.ceil((new Date(earliest).getTime() - Date.now()) / 86400000);
+      const batchWord = relevant.length === 1 ? 'batch' : 'batches';
+
+      items.push({
+        id: `expiry-${item.id}`,
+        severity: expiredCase ? 'alert' : 'warning',
+        title: `${expiredCase ? 'Expired' : 'Expiring'} · ${item.name}`,
+        detail: expiredCase
+          ? `${totalQty} ${item.unit} past expiry · ${relevant.length} ${batchWord}`
+          : `${totalQty} ${item.unit} expire in ${daysLeft}d · ${relevant.length} ${batchWord}`,
+        actionLabel: expiredCase ? 'Dispose →' : 'Review →',
+        onAction: () => onNavigate('inventory'),
+      });
+    });
+
     // Highest severity first, then stable by insertion order.
     return items.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
-  }, [orders, orderDispatchLog, overstockReviewNotes, suppliers, confirmReceived, onNavigate]);
+  }, [
+    orders, orderDispatchLog, overstockReviewNotes, suppliers, confirmReceived, onNavigate,
+    inventory, inventoryAlertLog, isExpired, isExpiringSoon,
+  ]);
 
   // ── Compact status strip chips ────────────────────────────
   const compactChips = [
@@ -171,8 +242,10 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       tone: undefined,
     },
     {
-      label: `Recalls · 3 pending`,
-      onClick: () => onNavigate('scheduling'),
+      // M21 §3 Inputs — "Sent Orders / Order Notifications - Module 20".
+      // Surface the count of POs currently awaiting supplier reply.
+      label: `Orders · ${orders.filter(o => o.status === 'sent').length} awaiting response`,
+      onClick: () => onNavigate('orders'),
       tone: undefined,
     },
     {
@@ -193,7 +266,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
           </p>
         </div>
         <button
-          onClick={() => onNavigate('calendar')}
+          onClick={() => onNavigate('scheduling')}
           className="flex items-center gap-2 px-3 py-2 text-sm font-medium bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors"
         >
           + Walk-in
@@ -239,7 +312,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
         <div className="xl:col-span-2 bg-white rounded-xl border border-clinical-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-clinical-100 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-clinical-800">Today's Schedule</h2>
-            <button onClick={() => onNavigate('calendar')} className="text-xs text-primary-600 hover:text-primary-800 flex items-center gap-1">
+            <button onClick={() => onNavigate('scheduling')} className="text-xs text-primary-600 hover:text-primary-800 flex items-center gap-1">
               Full calendar <IconChevronRight className="w-3 h-3" />
             </button>
           </div>

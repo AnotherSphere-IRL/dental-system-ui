@@ -24,7 +24,6 @@ import {
 
 type StockState = 'critical' | 'low' | 'normal' | 'overstock';
 type ExpiryState = 'expired' | 'expiring' | 'fresh' | 'none';
-type Filter = 'expired' | 'all' | 'low' | 'expiring';
 type PrimaryView = 'stock' | 'alerts';
 type DetailTab = 'deductions' | 'activity';
 
@@ -951,6 +950,11 @@ function ItemDrawer({ item, initialMode = 'view', initialTab, onSave, onClose }:
   const [criticalThreshold, setCriticalThreshold] = useState(source?.criticalThreshold ?? 5);
   const [reorderThreshold, setReorderThreshold] = useState(source?.reorderThreshold ?? 10);
   const [overstockThreshold, setOverstockThreshold] = useState(source?.overstockThreshold ?? 50);
+  // Initial stock is a new-item-only concept: on edit, quantity is governed
+  // by the batch drawer, not by this field. Keeping it in state (rather than
+  // a separate component) is simpler and keeps the save handler in one place.
+  const [initialQty, setInitialQty] = useState(0);
+  const [initialExpiry, setInitialExpiry] = useState('');
   const [error, setError] = useState('');
 
   const resetForm = () => {
@@ -960,6 +964,8 @@ function ItemDrawer({ item, initialMode = 'view', initialTab, onSave, onClose }:
     setCriticalThreshold(source?.criticalThreshold ?? 5);
     setReorderThreshold(source?.reorderThreshold ?? 10);
     setOverstockThreshold(source?.overstockThreshold ?? 50);
+    setInitialQty(0);
+    setInitialExpiry('');
     setError('');
   };
 
@@ -983,6 +989,20 @@ function ItemDrawer({ item, initialMode = 'view', initialTab, onSave, onClose }:
       setError('Low / Reorder must be strictly less than Overstock / Max.');
       return;
     }
+    // Initial stock feeds M19 expiry tracking, which is per-batch. Require an
+    // expiry so the seeded batch can participate in expiry alerts.
+    if (isNew && initialQty > 0 && !initialExpiry) {
+      setError('Expiry date is required when adding initial stock.');
+      return;
+    }
+
+    const initialBatches: InventoryBatch[] = isNew && initialQty > 0
+      ? [{
+          batchNo: `B${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`,
+          qty: initialQty,
+          expiry: initialExpiry,
+        }]
+      : [];
 
     const nextItem: InventoryItem = {
       id: source?.id ?? `I${String(Date.now()).slice(-3)}`,
@@ -992,11 +1012,15 @@ function ItemDrawer({ item, initialMode = 'view', initialTab, onSave, onClose }:
       unitCost: source?.unitCost ?? 0,
       supplierId: source?.supplierId ?? suppliers[0]?.id ?? 'S01',
       backupSupplierIds: source?.backupSupplierIds ?? [],
-      quantity: source?.quantity ?? 0,
+      quantity: isNew ? initialQty : (source?.quantity ?? 0),
+      // New items are "stocked" only when they carry initial quantity — a
+      // pre-configured record with qty 0 stays silent in the M18 watcher
+      // until its first batch arrives.
+      everStocked: isNew ? initialQty > 0 : (source?.everStocked ?? true),
       criticalThreshold,
       reorderThreshold,
       overstockThreshold,
-      batches: source?.batches ?? [],
+      batches: isNew ? initialBatches : (source?.batches ?? []),
     };
     onSave(nextItem);
     onClose();
@@ -1098,6 +1122,37 @@ function ItemDrawer({ item, initialMode = 'view', initialTab, onSave, onClose }:
                 </Field>
               </div>
             </section>
+
+            {isNew && (
+              <section className="border-b border-clinical-200 py-7">
+                <p className="mb-4 font-semibold text-clinical-900">Initial stock</p>
+                <p className="mb-4 text-xs leading-relaxed text-clinical-400">
+                  Optional. Leave quantity at 0 to pre-configure this item before its first delivery —
+                  no stock alert or purchase order will fire until a batch is registered.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Quantity">
+                    <input
+                      type="number"
+                      min="0"
+                      className={inputClass}
+                      value={initialQty}
+                      onChange={e => setInitialQty(Math.max(0, Number(e.target.value) || 0))}
+                    />
+                  </Field>
+                  {initialQty > 0 && (
+                    <Field label="Expiry Date">
+                      <input
+                        type="date"
+                        className={inputClass}
+                        value={initialExpiry}
+                        onChange={e => setInitialExpiry(e.target.value)}
+                      />
+                    </Field>
+                  )}
+                </div>
+              </section>
+            )}
 
             <section className="py-7">
               <p className="mb-4 font-semibold text-clinical-900">Alert thresholds</p>
@@ -1254,7 +1309,6 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
 
   const [showAddBatch, setShowAddBatch] = useState(false);
   const [discarded, setDiscarded] = useState<string[]>([]);
-  const [removedEarly, setRemovedEarly] = useState<string[]>([]);
 
   const now = Date.now();
   const batches = source.batches;
@@ -1270,6 +1324,8 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
       ...source,
       quantity: source.quantity + batch.qty,
       batches: [...source.batches, batch],
+      // First real stock — the item is now eligible for M18 threshold alerts.
+      everStocked: true,
     });
     setShowAddBatch(false);
   };
@@ -1349,31 +1405,15 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
               <p className="text-xs font-bold tracking-wider text-warning-700">EXPIRING SOON</p>
               <p className="mt-1 text-xs text-clinical-500">Currently usable — flagged within the alert window.</p>
             </div>
-            {expiringSoon.map(b => {
-              const done = removedEarly.includes(b.batchNo);
-              return (
-                <div key={b.batchNo} className="mb-3">
-                  <BatchRow
-                    id={b.batchNo}
-                    quantity={`${b.qty} ${item.unit}`}
-                    timing={`${Math.round((new Date(b.expiry).getTime() - now) / 86400000)} days left`}
-                  />
-                  {!done ? (
-                    <button
-                      onClick={() => {
-                        discardBatch(item.id, b.batchNo);
-                        setRemovedEarly(prev => [...prev, b.batchNo]);
-                      }}
-                      className="mt-2 w-full rounded-lg border border-clinical-200 px-4 py-2.5 text-sm font-semibold text-clinical-700 hover:bg-clinical-50"
-                    >
-                      Remove Batch Early
-                    </button>
-                  ) : (
-                    <div className="mt-2 rounded-xl bg-clinical-50 p-3 text-sm text-clinical-500">Batch removed from usable stock.</div>
-                  )}
-                </div>
-              );
-            })}
+            {expiringSoon.map(b => (
+              <div key={b.batchNo} className="mb-3">
+                <BatchRow
+                  id={b.batchNo}
+                  quantity={`${b.qty} ${item.unit}`}
+                  timing={`${Math.round((new Date(b.expiry).getTime() - now) / 86400000)} days left`}
+                />
+              </div>
+            ))}
           </section>
         )}
 
@@ -1398,7 +1438,11 @@ function BatchDrawer({ item, onClose }: { item: InventoryRow; onClose: () => voi
           <div className="py-10 text-center">
             <IconPackage className="mx-auto h-6 w-6 text-clinical-300" />
             <p className="mt-3 text-sm font-medium text-clinical-600">No batches tracked</p>
-            <p className="mt-1 text-xs text-clinical-400">Register a batch above to start tracking quantity and expiration.</p>
+            <p className="mt-1 text-xs text-clinical-400">
+              {source.everStocked
+                ? 'Register a batch above to start tracking quantity and expiration.'
+                : 'Pre-configured item — no stock received yet. Register a batch above when the first delivery arrives.'}
+            </p>
           </div>
         )}
       </div>
@@ -1431,7 +1475,6 @@ export default function Inventory({
   } = useClinic();
 
   const [primaryView, setPrimaryView] = useState<PrimaryView>('stock');
-  const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemDrawer, setItemDrawer] = useState<DrawerState | null>(null);
@@ -1445,13 +1488,8 @@ export default function Inventory({
 
   const filteredItems = useMemo(() => connectedInventoryRows.filter(item => {
     const searchable = `${item.name} ${item.category} ${item.id} ${item.expiryDetail}`.toLowerCase();
-    const matchesSearch = searchable.includes(query.toLowerCase());
-    const matchesFilter = filter === 'all'
-      || (filter === 'expired' && item.expiry === 'expired')
-      || (filter === 'low' && ['low', 'critical'].includes(item.stock))
-      || (filter === 'expiring' && item.expiry === 'expiring');
-    return matchesSearch && matchesFilter;
-  }), [connectedInventoryRows, filter, query]);
+    return searchable.includes(query.toLowerCase());
+  }), [connectedInventoryRows, query]);
 
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
   const pageStart = (currentPage - 1) * pageSize;
@@ -1463,7 +1501,7 @@ export default function Inventory({
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [filter, query]);
+  }, [query]);
 
   // Consume-once deep-link target — mirrors the `pendingOrderId` pattern in
   // ClinicApp/OrderMonitoring. Without the ref guard this effect re-fires on
@@ -1493,13 +1531,6 @@ export default function Inventory({
     document.addEventListener('mousedown', closeOnOutsideClick);
     return () => document.removeEventListener('mousedown', closeOnOutsideClick);
   }, [menuId]);
-
-  const tabs: { id: Filter; label: string; count: number }[] = [
-    { id: 'expired', label: 'EXPIRED', count: connectedInventoryRows.filter(item => item.expiry === 'expired').length },
-    { id: 'all', label: 'All', count: connectedInventoryRows.length },
-    { id: 'low', label: 'Low/Critical', count: connectedInventoryRows.filter(item => ['low', 'critical'].includes(item.stock)).length },
-    { id: 'expiring', label: 'Expiring', count: connectedInventoryRows.filter(item => item.expiry === 'expiring').length },
-  ];
 
   return (
     <div className="mx-auto max-w-[1500px] p-6 lg:p-8">
@@ -1558,27 +1589,6 @@ export default function Inventory({
             >
               <IconPlus className="h-4 w-4" /> Add Item
             </button>
-          </div>
-
-          <div className="mb-4 flex items-center gap-1 border-b border-clinical-200">
-            {tabs.map(tab => {
-              const active = filter === tab.id;
-              const hazard = tab.id === 'expired';
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setFilter(tab.id)}
-                  className={`relative px-4 py-3 text-xs font-semibold transition ${
-                    active
-                      ? hazard ? 'text-alert-700' : 'text-primary-800'
-                      : hazard ? 'text-alert-600 hover:bg-alert-50' : 'text-clinical-500 hover:text-clinical-800'
-                  }`}
-                >
-                  {tab.label} ({tab.count})
-                  {active && <span className={`absolute inset-x-2 bottom-0 h-0.5 ${hazard ? 'bg-alert-600' : 'bg-primary-700'}`} />}
-                </button>
-              );
-            })}
           </div>
 
           <div className="overflow-visible rounded-xl border border-clinical-200 bg-white shadow-sm">
@@ -1665,7 +1675,7 @@ export default function Inventory({
                     <td colSpan={6} className="px-6 py-16 text-center">
                       <IconSearch className="mx-auto h-6 w-6 text-clinical-300" />
                       <p className="mt-3 text-sm font-medium text-clinical-700">No inventory items found</p>
-                      <p className="mt-1 text-xs text-clinical-400">Try another search or filter.</p>
+                      <p className="mt-1 text-xs text-clinical-400">Try another search.</p>
                     </td>
                   </tr>
                 )}
