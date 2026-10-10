@@ -6,8 +6,6 @@ import {
   IconClock,
   IconDownload,
   IconExternalLink,
-  IconFileText,
-  IconLock,
   IconMail,
   IconMoreVertical,
   IconPackage,
@@ -20,7 +18,6 @@ import {
   type SupplyOrder,
   type OrderStatus,
   type OrderTimelineEvent,
-  type InventoryItem,
   type Supplier,
   type ResponseClass,
 } from '../../context/ClinicContext';
@@ -32,7 +29,6 @@ type FilterTab = 'action' | 'all' | 'pending' | 'completed';
 interface DisplayOrder {
   order: SupplyOrder;
   supplier: Supplier | undefined;
-  item: InventoryItem | undefined;
   route: string;
 }
 
@@ -376,6 +372,13 @@ function TimelineDrawer({
   const canAct = !isTerminal(order.status);
   const isUnclear = order.status === 'unclear';
 
+  // Print-to-PDF acts as the "export" — the drawer body is wrapped in
+  // #audit-print-region and the print CSS lifts it into a clean sheet.
+  const handlePrint = () => {
+    setExported(true);
+    window.print();
+  };
+
   return (
     <>
       <Overlay onClose={onClose}>
@@ -388,74 +391,75 @@ function TimelineDrawer({
           <button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100"><IconX className="h-5 w-5" /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-7 py-7">
-          <p className="mb-7 text-xs font-semibold uppercase tracking-wider text-clinical-400">Order audit trail</p>
-          {events.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-clinical-200 px-5 py-10 text-center">
-              <IconClock className="mx-auto h-5 w-5 text-clinical-300" />
-              <p className="mt-3 text-xs font-medium text-clinical-600">No events recorded yet</p>
-              <p className="mt-1 text-[11px] text-clinical-400">Events will appear here as the order progresses.</p>
-            </div>
-          ) : (
-            <div className="relative ml-3 border-l border-clinical-200 pl-8">
-              {events.map((event, index) => {
-                const EventIcon =
-                  event.kind === 'created' ? IconPackage
-                  : event.kind === 'dispatched' ? IconMail
-                  : event.kind === 'reply-parsed' ? IconMail
-                  : event.kind === 'classified' ? IconCheck
-                  : event.kind === 'reclassified' ? IconCheck
-                  : event.kind === 'rerouted' ? IconExternalLink
-                  : event.kind === 'timeout' ? IconClock
-                  : event.kind === 'escalated' ? IconAlert
-                  : event.kind === 'received' ? IconCheck
-                  : event.kind === 'cancelled' ? IconX
-                  : event.kind === 'document' ? IconPrinter
-                  : IconPackage;
-                const tone =
-                  event.kind === 'received' || event.kind === 'classified' ? 'success'
-                  : event.kind === 'reclassified' ? 'warning'
-                  : event.kind === 'escalated' || event.kind === 'timeout' ? 'alert'
-                  : event.kind === 'cancelled' ? 'neutral'
-                  : event.kind === 'rerouted' ? 'warning'
-                  : 'primary';
-                const toneClasses =
-                  tone === 'success' ? 'border-success-100 text-success-700'
-                  : tone === 'alert' ? 'border-alert-100 text-alert-700'
-                  : tone === 'warning' ? 'border-warning-100 text-warning-700'
-                  : tone === 'neutral' ? 'border-clinical-200 text-clinical-500'
-                  : 'border-clinical-200 text-primary-700';
-                return (
-                  <div key={event.id} className={index < events.length - 1 ? 'pb-8' : 'pb-2'}>
-                    <span className={`absolute -left-4 flex h-8 w-8 items-center justify-center rounded-full border bg-white shadow-sm ${toneClasses}`}>
-                      <EventIcon className="h-4 w-4" />
-                    </span>
-                    <p className="text-xs font-medium text-clinical-400">{event.timestamp}</p>
-                    <p className="mt-1.5 text-sm font-semibold text-clinical-900">{event.title}</p>
-                    {event.emailSnippet ? (
-                      <div className="mt-3 rounded-lg border border-clinical-200 bg-clinical-50 p-3.5">
-                        <p className="truncate text-xs text-clinical-400">{event.emailSnippet.sender}</p>
-                        <p className="mt-2 text-sm italic leading-relaxed text-clinical-600">
-                          &ldquo;{event.emailSnippet.before}
-                          <span className="rounded bg-warning-100 px-1 py-0.5 font-semibold text-warning-700">{event.emailSnippet.keyword}</span>
-                          {event.emailSnippet.after}&rdquo;
-                        </p>
-                        <div className="mt-2.5 text-right">
-                          <button
-                            onClick={() => setSelectedEmail({ snippet: event.emailSnippet!, date: event.timestamp })}
-                            className="text-xs font-semibold text-primary-700 hover:text-primary-900"
-                          >
-                            View full email
-                          </button>
+          <div id="audit-print-region">
+            <p className="mb-7 text-xs font-semibold uppercase tracking-wider text-clinical-400">Order audit trail</p>
+            {events.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-clinical-200 px-5 py-10 text-center">
+                <IconClock className="mx-auto h-5 w-5 text-clinical-300" />
+                <p className="mt-3 text-xs font-medium text-clinical-600">No events recorded yet</p>
+                <p className="mt-1 text-[11px] text-clinical-400">Events will appear here as the order progresses.</p>
+              </div>
+            ) : (
+              <div className="relative ml-3 border-l border-clinical-200 pl-8">
+                {events.map((event, index) => {
+                  const EventIcon =
+                    event.kind === 'created' ? IconPackage
+                    : event.kind === 'dispatched' ? IconMail
+                    : event.kind === 'reply-parsed' ? IconMail
+                    : event.kind === 'classified' ? IconCheck
+                    : event.kind === 'reclassified' ? IconCheck
+                    : event.kind === 'rerouted' ? IconExternalLink
+                    : event.kind === 'timeout' ? IconClock
+                    : event.kind === 'escalated' ? IconAlert
+                    : event.kind === 'received' ? IconCheck
+                    : event.kind === 'cancelled' ? IconX
+                    : IconPackage;
+                  const tone =
+                    event.kind === 'received' || event.kind === 'classified' ? 'success'
+                    : event.kind === 'reclassified' ? 'warning'
+                    : event.kind === 'escalated' || event.kind === 'timeout' ? 'alert'
+                    : event.kind === 'cancelled' ? 'neutral'
+                    : event.kind === 'rerouted' ? 'warning'
+                    : 'primary';
+                  const toneClasses =
+                    tone === 'success' ? 'border-success-100 text-success-700'
+                    : tone === 'alert' ? 'border-alert-100 text-alert-700'
+                    : tone === 'warning' ? 'border-warning-100 text-warning-700'
+                    : tone === 'neutral' ? 'border-clinical-200 text-clinical-500'
+                    : 'border-clinical-200 text-primary-700';
+                  return (
+                    <div key={event.id} className={index < events.length - 1 ? 'pb-8' : 'pb-2'}>
+                      <span className={`absolute -left-4 flex h-8 w-8 items-center justify-center rounded-full border bg-white shadow-sm ${toneClasses}`}>
+                        <EventIcon className="h-4 w-4" />
+                      </span>
+                      <p className="text-xs font-medium text-clinical-400">{event.timestamp}</p>
+                      <p className="mt-1.5 text-sm font-semibold text-clinical-900">{event.title}</p>
+                      {event.emailSnippet ? (
+                        <div className="mt-3 rounded-lg border border-clinical-200 bg-clinical-50 p-3.5">
+                          <p className="truncate text-xs text-clinical-400">{event.emailSnippet.sender}</p>
+                          <p className="mt-2 text-sm italic leading-relaxed text-clinical-600">
+                            &ldquo;{event.emailSnippet.before}
+                            <span className="rounded bg-warning-100 px-1 py-0.5 font-semibold text-warning-700">{event.emailSnippet.keyword}</span>
+                            {event.emailSnippet.after}&rdquo;
+                          </p>
+                          <div className="mt-2.5 text-right">
+                            <button
+                              onClick={() => setSelectedEmail({ snippet: event.emailSnippet!, date: event.timestamp })}
+                              className="text-xs font-semibold text-primary-700 hover:text-primary-900"
+                            >
+                              View full email
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <p className="mt-1.5 text-sm leading-relaxed text-clinical-500">{event.detail}</p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                      ) : (
+                        <p className="mt-1.5 text-sm leading-relaxed text-clinical-500">{event.detail}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
         {requiresIntervention && canAct ? (
           <div className="border-t border-clinical-200 bg-white px-7 py-5 shadow-lg space-y-3">
@@ -496,7 +500,7 @@ function TimelineDrawer({
         ) : (
           <div className="flex items-center justify-between border-t border-clinical-200 bg-white px-7 py-4">
             <p className="text-xs text-clinical-400">{events.length} logged events</p>
-            <button onClick={() => setExported(true)} className="inline-flex items-center gap-2 rounded-lg border border-clinical-200 bg-white px-3.5 py-2 text-xs font-semibold text-clinical-700 hover:bg-clinical-50">
+            <button onClick={handlePrint} className="inline-flex items-center gap-2 rounded-lg border border-clinical-200 bg-white px-3.5 py-2 text-xs font-semibold text-clinical-700 hover:bg-clinical-50">
               {exported ? <IconCheck className="h-4 w-4 text-success-600" /> : <IconDownload className="h-4 w-4" />}
               {exported ? 'Log exported' : 'Export log'}
             </button>
@@ -519,14 +523,11 @@ function TimelineDrawer({
 // ── Purchase Order preview drawer ─────────────────────────────
 
 function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void }) {
-  const { suppliers, logPurchaseOrderPrint } = useClinic();
+  const { suppliers } = useClinic();
   const supplier = suppliers.find(s => s.id === order.supplierId);
   const subtotal = order.qty * order.unitCost;
 
-  const handlePrint = () => {
-    logPurchaseOrderPrint(order.id);
-    setTimeout(() => window.print(), 50);
-  };
+  const handlePrint = () => window.print();
 
   return (
     <Overlay align="right" onClose={onClose}>
@@ -581,6 +582,7 @@ function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void 
                 <tr className="border-b-2 border-clinical-200">
                   <th className="py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Item</th>
                   <th className="py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-clinical-500">SKU</th>
+                  <th className="py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Stock at Draft</th>
                   <th className="py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Quantity</th>
                   <th className="py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Unit Cost</th>
                   <th className="py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-clinical-500">Subtotal</th>
@@ -590,6 +592,7 @@ function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void 
                 <tr className="border-b border-clinical-100">
                   <td className="py-3 font-medium text-clinical-900">{order.itemName}</td>
                   <td className="py-3 font-mono text-xs text-clinical-600">{order.itemId}</td>
+                  <td className="py-3 text-right text-clinical-700">{order.stockAtDraft} {order.unit}</td>
                   <td className="py-3 text-right text-clinical-700">{order.qty} {order.unit}</td>
                   <td className="py-3 text-right text-clinical-700">₱{order.unitCost.toLocaleString()}</td>
                   <td className="py-3 text-right font-medium text-clinical-900">₱{subtotal.toLocaleString()}</td>
@@ -597,7 +600,7 @@ function PODrawer({ order, onClose }: { order: SupplyOrder; onClose: () => void 
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={4} className="border-t-2 border-primary-700 pt-4 text-right text-sm font-semibold text-clinical-700">
+                  <td colSpan={5} className="border-t-2 border-primary-700 pt-4 text-right text-sm font-semibold text-clinical-700">
                     Total Amount
                   </td>
                   <td className="border-t-2 border-primary-700 pt-4 text-right text-base font-bold text-primary-700">
@@ -647,131 +650,6 @@ function PoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-// ── Invoice drawer (completed orders only) ────────────────────
-
-interface InvoiceLine {
-  item: InventoryItem;
-  quantity: number;
-  unitPrice: number;
-}
-
-function InvoiceDrawer({ order, inventory, onClose }: { order: SupplyOrder; inventory: InventoryItem[]; onClose: () => void }) {
-  const { suppliers } = useClinic();
-  const [downloaded, setDownloaded] = useState(false);
-  const supplier = suppliers.find(s => s.id === order.supplierId);
-  const primary = inventory.find(i => i.id === order.itemId);
-  const lines: InvoiceLine[] = primary
-    ? [{ item: primary, quantity: order.qty, unitPrice: order.unitCost }]
-    : [];
-  const invoiceTotal = lines.reduce((total, line) => total + line.quantity * line.unitPrice, 0);
-  const invoiceDate = order.createdAt;
-
-  return (
-    <Overlay align="right" onClose={onClose}>
-      <aside className="relative flex h-full min-h-screen w-full max-w-2xl flex-col bg-white shadow-2xl">
-        <div className="flex items-center gap-4 border-b border-clinical-200 px-6 py-5">
-          <button onClick={onClose} aria-label="Close invoice" className="rounded-lg p-2 text-clinical-500 hover:bg-clinical-100">
-            <IconX className="h-5 w-5" />
-          </button>
-          <div>
-            <p className="font-display text-lg font-semibold text-clinical-900">{order.poRef}</p>
-            <p className="mt-1 text-sm text-clinical-500">{supplier?.name ?? order.supplierId}</p>
-          </div>
-          <span className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-success-100 bg-success-50 px-2.5 py-1 text-xs font-semibold text-success-700">
-            <IconCheck className="h-3.5 w-3.5" /> Completed
-          </span>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-7 py-7">
-          <section>
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-clinical-400">Source document</p>
-            <div className="flex items-center gap-4 rounded-xl border border-clinical-200 bg-clinical-50/60 p-5">
-              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-clinical-200 bg-white text-alert-600 shadow-sm">
-                <IconFileText className="h-6 w-6" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-clinical-900">Vendor Invoice Attached</p>
-                <p className="mt-1 text-xs text-clinical-500">Automated OCR rule matched a PDF attachment on {invoiceDate}.</p>
-              </div>
-              <button onClick={() => setDownloaded(true)} className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-primary-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-primary-700 shadow-sm hover:bg-primary-50">
-                {downloaded ? <IconCheck className="h-4 w-4 text-success-600" /> : <IconDownload className="h-4 w-4" />}
-                {downloaded ? 'PDF Downloaded' : 'Download Original PDF'}
-              </button>
-            </div>
-          </section>
-
-          <section className="mt-8">
-            <div className="mb-3 flex items-end justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wider text-clinical-400">Reconciliation summary</p>
-              <p className="text-xs text-clinical-400">Invoice matched to goods received</p>
-            </div>
-            <div className="overflow-hidden rounded-xl border border-clinical-200">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-clinical-200 bg-clinical-50 text-[10px] font-semibold uppercase tracking-wider text-clinical-500">
-                    <th className="px-4 py-3">Item Name</th>
-                    <th className="px-3 py-3 text-center">Qty Ordered</th>
-                    <th className="px-3 py-3 text-center">Qty Received</th>
-                    <th className="px-3 py-3 text-right">Unit Price</th>
-                    <th className="px-4 py-3 text-right">Total</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-clinical-100">
-                  {lines.map(line => (
-                    <tr key={line.item.id}>
-                      <td className="px-4 py-4">
-                        <p className="font-semibold text-clinical-900">{line.item.name}</p>
-                        <p className="mt-1 flex items-center gap-1 text-xs text-clinical-400">
-                          <IconLock className="h-3 w-3" /> Internal SKU {line.item.id}
-                        </p>
-                      </td>
-                      <td className="px-3 py-4 text-center font-medium text-clinical-700">{line.quantity}</td>
-                      <td className="px-3 py-4 text-center">
-                        <span className="inline-flex items-center gap-1 font-semibold text-success-700">
-                          <IconCheck className="h-3.5 w-3.5" /> {line.quantity}
-                        </span>
-                      </td>
-                      <td className="px-3 py-4 text-right text-clinical-600">₱{line.unitPrice.toLocaleString()}</td>
-                      <td className="px-4 py-4 text-right font-semibold text-clinical-900">₱{(line.quantity * line.unitPrice).toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t border-clinical-200 bg-success-50/50">
-                    <td colSpan={4} className="px-4 py-4 text-right text-sm font-semibold text-clinical-700">Total Invoice Amount</td>
-                    <td className="px-4 py-4 text-right text-base font-bold text-success-700">₱{invoiceTotal.toLocaleString()}</td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-            <div className="mt-3 flex items-center gap-2 text-xs text-success-700">
-              <IconCheck className="h-4 w-4" />
-              <span className="font-semibold">Reconciled successfully</span>
-              <span className="text-clinical-400">Invoice quantities match received stock.</span>
-            </div>
-          </section>
-        </div>
-
-        <div className="sticky bottom-0 border-t border-clinical-200 bg-white px-7 py-5 shadow-lg">
-          <div className="flex items-center justify-between gap-5">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-clinical-400">Accounting status</p>
-              <span className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-warning-100 bg-warning-50 px-2.5 py-1 text-xs font-semibold text-warning-700">
-                <IconClock className="h-3.5 w-3.5" /> Payment Pending
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <button onClick={() => window.print()} className="inline-flex items-center gap-2 px-2 py-2 text-sm font-semibold text-clinical-600 hover:text-clinical-900">
-                <IconPrinter className="h-4 w-4" /> Print Record
-              </button>
-            </div>
-          </div>
-        </div>
-      </aside>
-    </Overlay>
-  );
-}
-
 // ── Main OrderMonitoring component ───────────────────────────
 
 interface OrderMonitoringProps {
@@ -800,7 +678,6 @@ export default function OrderMonitoring({
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<SupplyOrder | null>(null);
   const [timelineOpen, setTimelineOpen] = useState(false);
-  const [invoiceOrder, setInvoiceOrder] = useState<SupplyOrder | null>(null);
   const [poOrder, setPoOrder] = useState<SupplyOrder | null>(null);
   const [overrideTarget, setOverrideTarget] = useState<SupplyOrder | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
@@ -828,17 +705,16 @@ export default function OrderMonitoring({
   const displayOrders: DisplayOrder[] = useMemo(() => orders.map(order => ({
     order,
     supplier: suppliers.find(s => s.id === order.supplierId),
-    item: inventory.find(i => i.id === order.itemId),
     route: order.originalOrderId ? 'Backup · Auto-reroute' : 'Primary',
-  })), [orders, suppliers, inventory]);
+  })), [orders, suppliers]);
 
-  const filtered = useMemo(() => displayOrders.filter(({ order, supplier, item }) => {
+  const filtered = useMemo(() => displayOrders.filter(({ order, supplier }) => {
     const matchesTab =
       filter === 'all' ? true
       : filter === 'action' ? isActionRequired(order.status)
       : filter === 'pending' ? isPending(order.status)
       : order.status === 'completed';
-    const searchable = `${order.poRef} ${supplier?.name ?? ''} ${order.itemName} ${item?.id ?? ''} ${order.status}`.toLowerCase();
+    const searchable = `${order.poRef} ${supplier?.name ?? ''} ${order.itemName} ${order.itemId} ${order.status}`.toLowerCase();
     return matchesTab && searchable.includes(query.toLowerCase());
   }), [displayOrders, filter, query]);
 
@@ -907,7 +783,8 @@ export default function OrderMonitoring({
               </tr>
             </thead>
             <tbody className="divide-y divide-clinical-100">
-              {visible.map(({ order, supplier, item, route }) => {
+              {visible.map(({ order, supplier, route }) => {
+                const item = inventory.find(i => i.id === order.itemId);
                 const linkedAlert = inventoryAlertLog.find(a => a.linkedOrderId === order.id);
                 const bouncedLog = orderDispatchLog.find(
                   l => l.orderId === order.id && l.deliveryStatus === 'bounced'
@@ -1002,15 +879,9 @@ export default function OrderMonitoring({
                         <button onClick={() => setMenuId(menuId === order.id ? null : order.id)} aria-label={`Actions for ${order.poRef}`} className="rounded-lg p-1.5 text-clinical-400 hover:bg-clinical-100 hover:text-clinical-800"><IconMoreVertical className="h-5 w-5" /></button>
                         {menuId === order.id && (
                           <div className="absolute right-0 top-full z-50 mt-2 w-60 rounded-lg border border-clinical-200 bg-white py-1.5 shadow-xl">
-                            {/* Read-only group */}
                             <button onClick={() => { setPoOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                               <IconPrinter className="h-4 w-4 shrink-0 text-clinical-500" /> Preview purchase order
                             </button>
-                            {order.status === 'completed' && (
-                              <button onClick={() => { setInvoiceOrder(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
-                                <IconFileText className="h-4 w-4 shrink-0 text-clinical-500" /> View invoice
-                              </button>
-                            )}
                             <button onClick={() => { openTimeline(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                               <IconClock className="h-4 w-4 shrink-0 text-clinical-500" /> View audit trail
                             </button>
@@ -1020,7 +891,6 @@ export default function OrderMonitoring({
                               <div className="my-1 border-t border-clinical-100" />
                             )}
 
-                            {/* Consequential group */}
                             {canOverride && (
                               <button onClick={() => { setOverrideTarget(order); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                                 <IconExternalLink className="h-4 w-4 shrink-0 text-clinical-500" />
@@ -1070,7 +940,6 @@ export default function OrderMonitoring({
         />
       )}
       {poOrder && <PODrawer order={poOrder} onClose={() => setPoOrder(null)} />}
-      {invoiceOrder && <InvoiceDrawer order={invoiceOrder} inventory={inventory} onClose={() => setInvoiceOrder(null)} />}
       {overrideTarget && (
         <OverrideClassificationModal
           order={overrideTarget}

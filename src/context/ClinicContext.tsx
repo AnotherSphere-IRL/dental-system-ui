@@ -57,6 +57,10 @@ export interface SupplyOrder {
   itemId: string;
   itemName: string;
   qty: number;
+  // Stock level when the order was auto-drafted — surfaced on the PO per
+  // process doc §4 Activity #4 ("item, current stock, suggested quantity,
+  // primary supplier, and backup chain").
+  stockAtDraft: number;
   unit: string;
   supplierId: string;
   status: OrderStatus;
@@ -256,8 +260,7 @@ export type OrderTimelineKind =
   | 'timeout'
   | 'escalated'
   | 'received'
-  | 'cancelled'
-  | 'document';
+  | 'cancelled';
 
 export interface OrderTimelineEvent {
   id: string;
@@ -326,12 +329,12 @@ const SEED_INVENTORY: InventoryItem[] = [
 ];
 
 const SEED_ORDERS: SupplyOrder[] = [
-  { id: 'ORD-001', poRef: 'PO-2026-041', itemId: 'I01', itemName: 'Composite Resin A2', qty: 10, unit: 'syringe', supplierId: 'S01', unitCost: 420, status: 'being_delivered', supplierResponse: 'Confirmed. Order received. We will process this.', responseClass: 'confirmed', createdAt: subtractDays(today, 2), updatedAt: subtractDays(today, 1), confirmedAt: subtractDays(today, 1) },
-  { id: 'ORD-002', poRef: 'PO-2026-042', itemId: 'I03', itemName: 'Bonding Agent', qty: 4, unit: 'bottle', supplierId: 'S01', unitCost: 750, status: 'unclear', supplierResponse: 'Hi, do you need the 5ml or 7ml version? We have both in stock.', responseClass: 'unclear', createdAt: subtractDays(today, 1), updatedAt: subtractDays(today, 0) },
-  { id: 'ORD-003', poRef: 'PO-2026-043', itemId: 'I05', itemName: 'Dental Cement', qty: 6, unit: 'pack', supplierId: 'S02', unitCost: 380, status: 'rerouted', supplierResponse: 'Out of stock. Cannot fulfill.', responseClass: 'unavailable', linkedOrderId: 'ORD-004', createdAt: subtractDays(today, 3), updatedAt: subtractDays(today, 2) },
-  { id: 'ORD-004', poRef: 'PO-2026-043R1', itemId: 'I05', itemName: 'Dental Cement', qty: 6, unit: 'pack', supplierId: 'S04', unitCost: 390, status: 'sent', originalOrderId: 'ORD-003', createdAt: subtractDays(today, 2), updatedAt: subtractDays(today, 2) },
-  { id: 'ORD-005', poRef: 'PO-2026-044', itemId: 'I06', itemName: 'Rubber Dam (pack)', qty: 5, unit: 'pack', supplierId: 'S03', unitCost: 290, status: 'queued', createdAt: subtractDays(today, 0), updatedAt: subtractDays(today, 0) },
-  { id: 'ORD-006', poRef: 'PO-2026-040', itemId: 'I02', itemName: 'Composite Resin A3', qty: 8, unit: 'syringe', supplierId: 'S01', unitCost: 420, status: 'completed', supplierResponse: 'Noted po. Will deliver tomorrow.', responseClass: 'confirmed', createdAt: subtractDays(today, 7), updatedAt: subtractDays(today, 5), confirmedAt: subtractDays(today, 6), receivedAt: subtractDays(today, 5) },
+  { id: 'ORD-001', poRef: 'PO-2026-041', itemId: 'I01', itemName: 'Composite Resin A2', qty: 10, stockAtDraft: 3, unit: 'syringe', supplierId: 'S01', unitCost: 420, status: 'being_delivered', supplierResponse: 'Confirmed. Order received. We will process this.', responseClass: 'confirmed', createdAt: subtractDays(today, 2), updatedAt: subtractDays(today, 1), confirmedAt: subtractDays(today, 1) },
+  { id: 'ORD-002', poRef: 'PO-2026-042', itemId: 'I03', itemName: 'Bonding Agent', qty: 4, stockAtDraft: 0, unit: 'bottle', supplierId: 'S01', unitCost: 750, status: 'unclear', supplierResponse: 'Hi, do you need the 5ml or 7ml version? We have both in stock.', responseClass: 'unclear', createdAt: subtractDays(today, 1), updatedAt: subtractDays(today, 0) },
+  { id: 'ORD-003', poRef: 'PO-2026-043', itemId: 'I05', itemName: 'Dental Cement', qty: 6, stockAtDraft: 2, unit: 'pack', supplierId: 'S02', unitCost: 380, status: 'rerouted', supplierResponse: 'Out of stock. Cannot fulfill.', responseClass: 'unavailable', linkedOrderId: 'ORD-004', createdAt: subtractDays(today, 3), updatedAt: subtractDays(today, 2) },
+  { id: 'ORD-004', poRef: 'PO-2026-043R1', itemId: 'I05', itemName: 'Dental Cement', qty: 6, stockAtDraft: 2, unit: 'pack', supplierId: 'S04', unitCost: 390, status: 'sent', originalOrderId: 'ORD-003', createdAt: subtractDays(today, 2), updatedAt: subtractDays(today, 2) },
+  { id: 'ORD-005', poRef: 'PO-2026-044', itemId: 'I06', itemName: 'Rubber Dam (pack)', qty: 5, stockAtDraft: 1, unit: 'pack', supplierId: 'S03', unitCost: 290, status: 'queued', createdAt: subtractDays(today, 0), updatedAt: subtractDays(today, 0) },
+  { id: 'ORD-006', poRef: 'PO-2026-040', itemId: 'I02', itemName: 'Composite Resin A3', qty: 8, stockAtDraft: 4, unit: 'syringe', supplierId: 'S01', unitCost: 420, status: 'completed', supplierResponse: 'Noted po. Will deliver tomorrow.', responseClass: 'confirmed', createdAt: subtractDays(today, 7), updatedAt: subtractDays(today, 5), confirmedAt: subtractDays(today, 6), receivedAt: subtractDays(today, 5) },
 ];
 
 const msAgo = (days: number, hours = 0) => Date.now() - days * 86400000 - hours * 3600000;
@@ -508,7 +511,6 @@ interface ClinicContextValue {
   saveInventoryItem: (item: InventoryItem) => void;
   removeInventoryItem: (itemId: string) => void;
   discardBatch: (itemId: string, batchNo: string) => void;
-  logPurchaseOrderPrint: (orderId: string) => void;
 }
 
 const ClinicContext = createContext<ClinicContextValue | null>(null);
@@ -884,6 +886,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       itemId: target.itemId,
       itemName: target.itemName,
       qty: target.qty,
+      stockAtDraft: target.stockAtDraft,
       unit: target.unit,
       supplierId: nextBackupId,
       unitCost: target.unitCost,
@@ -1251,13 +1254,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const logPurchaseOrderPrint = (orderId: string) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return;
-    appendTimeline(orderId, 'document', 'doctor', 'Purchase Order printed or exported',
-      `${order.poRef} sent to printer or saved as PDF.`);
-  };
-
   const inventoryAlertLogRef = useRef(inventoryAlertLog);
   const ordersRef = useRef(orders);
 
@@ -1404,6 +1400,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
         itemId: item.id,
         itemName: item.name,
         qty: suggestedQty,
+        stockAtDraft: item.quantity,
         unit: item.unit,
         supplierId: item.supplierId,
         unitCost: item.unitCost,
@@ -1541,7 +1538,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       parseSupplierReply,
       automationConfig, setAutomationConfig,
       fireDemoTrigger,
-      saveInventoryItem, removeInventoryItem, discardBatch, logPurchaseOrderPrint,
+      saveInventoryItem, removeInventoryItem, discardBatch,
     }}>
       {children}
     </ClinicContext.Provider>

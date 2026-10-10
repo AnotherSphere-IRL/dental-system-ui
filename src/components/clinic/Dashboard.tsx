@@ -2,8 +2,8 @@ import { useState, useMemo } from 'react';
 import DemoTriggers from './DemoTriggers';
 import {
   IconAlert, IconCheck, IconClock, IconDollarSign,
-  IconUsers, IconPackage, IconExternalLink, IconX, IconChevronRight,
-  IconMail, IconFileText, IconTruck,
+  IconUsers, IconPackage, IconExternalLink, IconChevronRight,
+  IconMail, IconTruck,
 } from '../icons';
 import { useClinic, type SupplyOrder, type ResponseClass } from '../../context/ClinicContext';
 import type { ProfileTab } from './PatientProfile';
@@ -33,87 +33,157 @@ const MEDICAL_ALERTS = [
   { id: 'a3', patientId: 'P-1042', patient: 'Ana Reyes', time: '10:00 AM', message: 'Patient reported hypertension. Currently on Amlodipine 5mg daily.' },
 ];
 
+// ── Exception queue item shape ────────────────────────────────
+
+type ExceptionSeverity = 'alert' | 'warning' | 'info';
+
+interface ExceptionItem {
+  id: string;
+  severity: ExceptionSeverity;
+  title: string;
+  detail: string;
+  actionLabel: string;
+  onAction: () => void;
+}
+
+const SEVERITY_RANK: Record<ExceptionSeverity, number> = { alert: 3, warning: 2, info: 1 };
+
 export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: DashboardProps) {
-  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
+  // Medical alerts are informational for the day; the doctor marks them as
+  // reviewed (with a timestamp) rather than dismissing them entirely, so a
+  // critical allergy never silently disappears mid-shift.
+  const [reviewedAlerts, setReviewedAlerts] = useState<Record<string, string>>({});
+
   const {
     orders, inventory, getStockStatus, isExpiringSoon, isExpired,
-    confirmReceived, classifyResponse, suppliers, payments,
+    confirmReceived, suppliers, payments,
     refundRequests, cancellationRequests,
     orderDispatchLog, overstockReviewNotes, inventoryAlertLog,
     resolveOverstockNote,
   } = useClinic();
 
-  const activeAlerts = MEDICAL_ALERTS.filter(a => !dismissedAlerts.includes(a.id));
-
-  // ── Order panels ──────────────────────────────────────────
-  const actionableOrders = orders.filter(o =>
-    ['being_delivered', 'unclear', 'unavailable', 'no_response'].includes(o.status)
-  );
-  const rerouteEvents    = orders.filter(o => o.status === 'rerouted').slice(0, 5);
-  const escalations      = orders.filter(o => ['unavailable', 'no_response'].includes(o.status) && !o.linkedOrderId);
-  const activeOrderCount = orders.filter(o => !['completed', 'cancelled'].includes(o.status)).length;
-
-  // ── Supplier Response Status (M22) ────────────────────────
-  const responseBreakdown = useMemo(() => ({
-    confirmed:    orders.filter(o => ['being_delivered', 'completed'].includes(o.status)).length,
-    unavailable:  orders.filter(o => o.status === 'unavailable').length,
-    no_response:  orders.filter(o => o.status === 'no_response').length,
-    unclear:      orders.filter(o => o.status === 'unclear').length,
-  }), [orders]);
-
-  // ── Bounce Alerts (M20 / M22) ─────────────────────────────
-  const bounces = useMemo(
-    () => orderDispatchLog.filter(l => l.deliveryStatus === 'bounced'),
-    [orderDispatchLog],
-  );
-
-  // ── Overstock Notes (M18) ─────────────────────────────────
-  const openOverstockNotes = useMemo(
-    () => overstockReviewNotes.filter(n => n.status === 'open'),
-    [overstockReviewNotes],
-  );
-
-  // ── Inventory status ──────────────────────────────────────
+  // ── KPI aggregates ────────────────────────────────────────
   const lowStockCount = inventory.filter(i => ['critical', 'low'].includes(getStockStatus(i) as 'critical' | 'low')).length;
   const expiringCount = inventory.filter(i => i.batches.some(b => isExpiringSoon(b.expiry) || isExpired(b.expiry))).length;
-
-  // ── M18 open alerts ───────────────────────────────────────
   const openAlertCount = inventoryAlertLog.filter(a => !a.acknowledged).length;
 
-  // ── M15 Overdue balances ──────────────────────────────────
-  const overdueAccounts = payments.filter(p => p.status !== 'paid' && p.amountDue > p.amountPaid);
-  const overdueCount = overdueAccounts.length;
-  const overdueTotal = overdueAccounts.reduce((sum, p) => sum + (p.amountDue - p.amountPaid), 0);
-
-  // ── M16 Income — fully live from payments ────────────────
   const collectedIncome = payments
     .filter(p => p.status === 'paid')
     .reduce((sum, p) => sum + p.amountPaid, 0);
   const incomeProgress = Math.min(Math.round((collectedIncome / 20000) * 100), 100);
 
-  const incomeByService = useMemo(() => {
-    const map = new Map<string, number>();
-    payments
-      .filter(p => p.status === 'paid')
-      .forEach(p => map.set(p.service, (map.get(p.service) ?? 0) + p.amountPaid));
-    return Array.from(map.entries())
-      .map(([label, amount]) => ({ label, amount }))
-      .sort((a, b) => b.amount - a.amount)
-      .slice(0, 4);
-  }, [payments]);
+  const overdueAccounts = payments.filter(p => p.status !== 'paid' && p.amountDue > p.amountPaid);
+  const overdueTotal = overdueAccounts.reduce((sum, p) => sum + (p.amountDue - p.amountPaid), 0);
 
   const getSupplierName = (id: string) => suppliers.find(s => s.id === id)?.name ?? id;
 
-  const ORDER_STATUS_META: Record<string, { label: string; cls: string }> = {
-    being_delivered: { label: 'Being Delivered', cls: 'bg-primary-100 text-primary-700 border-primary-200' },
-    unclear:         { label: 'Unclear Response', cls: 'bg-warning-100 text-warning-700 border-warning-200' },
-    unavailable:     { label: 'Unavailable', cls: 'bg-alert-100 text-alert-700 border-alert-200' },
-    no_response:     { label: 'No Response', cls: 'bg-alert-100 text-alert-700 border-alert-200' },
-    sent:            { label: 'Sent / Awaiting',  cls: 'bg-primary-50 text-primary-600 border-primary-100' },
-  };
+  // ── Exception queue ───────────────────────────────────────
+  // Aggregates every "needs your action" item across orders, stock, and
+  // supplier comms into a single prioritized list. This is the module's
+  // core intent per the process doc — surface only exceptions.
+  const exceptions = useMemo<ExceptionItem[]>(() => {
+    const items: ExceptionItem[] = [];
+
+    // 1. Unclear supplier replies — need classification.
+    orders.filter(o => o.status === 'unclear').forEach(o => {
+      items.push({
+        id: `unclear-${o.id}`,
+        severity: 'alert',
+        title: `Unclear reply · ${getSupplierName(o.supplierId)}`,
+        detail: `${o.poRef} · ${o.qty} ${o.unit} ${o.itemName}`,
+        actionLabel: 'Classify →',
+        onAction: () => onNavigate('orders'),
+      });
+    });
+
+    // 2. Reroute chain exhausted — doctor must resolve manually.
+    orders.filter(o => ['unavailable', 'no_response'].includes(o.status) && !o.linkedOrderId).forEach(o => {
+      items.push({
+        id: `escalation-${o.id}`,
+        severity: 'alert',
+        title: `Backup chain exhausted · ${getSupplierName(o.supplierId)}`,
+        detail: `${o.poRef} · ${o.itemName}`,
+        actionLabel: 'Handle →',
+        onAction: () => onNavigate('orders'),
+      });
+    });
+
+    // 3. Email bounces — supplier email needs verification.
+    orderDispatchLog.filter(l => l.deliveryStatus === 'bounced').forEach(l => {
+      items.push({
+        id: `bounce-${l.id}`,
+        severity: 'alert',
+        title: `Email bounce · ${l.recipientName}`,
+        detail: `${l.poRef} · ${l.recipientEmail}`,
+        actionLabel: 'Fix email →',
+        onAction: () => onNavigate('suppliers'),
+      });
+    });
+
+    // 4. Being delivered — one-click confirm receipt.
+    orders.filter(o => o.status === 'being_delivered').forEach(o => {
+      items.push({
+        id: `delivered-${o.id}`,
+        severity: 'info',
+        title: `Being delivered · ${getSupplierName(o.supplierId)}`,
+        detail: `${o.poRef} · ${o.qty} ${o.unit} ${o.itemName}`,
+        actionLabel: 'Confirm Received',
+        onAction: () => confirmReceived(o.id),
+      });
+    });
+
+    // 5. Overstock review notes — need a doctor decision on threshold.
+    overstockReviewNotes.filter(n => n.status === 'open').forEach(n => {
+      items.push({
+        id: `overstock-${n.id}`,
+        severity: 'warning',
+        title: `Overstock · ${n.itemName}`,
+        detail: `${n.qty} at threshold ${n.overstockThreshold} · ordering suppressed`,
+        actionLabel: 'Review →',
+        onAction: () => onNavigate('inventory'),
+      });
+    });
+
+    // Highest severity first, then stable by insertion order.
+    return items.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+  }, [orders, orderDispatchLog, overstockReviewNotes, suppliers, confirmReceived, onNavigate]);
+
+  // ── Compact status strip chips ────────────────────────────
+  const compactChips = [
+    {
+      label: `Billing · ${payments.filter(p => p.status === 'pending').length} pay · ${refundRequests.filter(r => r.status === 'pending').length} refund`,
+      onClick: () => onOpenBilling('payments'),
+      tone: payments.filter(p => p.status === 'pending').length + refundRequests.filter(r => r.status === 'pending').length > 0 ? 'warning' as const : undefined,
+    },
+    {
+      label: `Supply · ${lowStockCount} low · ${expiringCount} expiring`,
+      onClick: () => onNavigate('inventory'),
+      tone: lowStockCount > 0 ? 'warning' as const : undefined,
+    },
+    {
+      label: `Stock alerts · ${openAlertCount} open`,
+      onClick: () => onNavigate('inventory'),
+      tone: openAlertCount > 0 ? 'warning' as const : undefined,
+    },
+    {
+      label: `Rerouted · ${orders.filter(o => o.status === 'rerouted').length}`,
+      onClick: () => onNavigate('orders'),
+      tone: undefined,
+    },
+    {
+      label: `Recalls · 3 pending`,
+      onClick: () => onNavigate('scheduling'),
+      tone: undefined,
+    },
+    {
+      label: `Overdue · ₱${overdueTotal.toLocaleString()} (${overdueAccounts.length})`,
+      onClick: () => onOpenBilling('balances'),
+      tone: overdueTotal > 0 ? 'alert' as const : undefined,
+    },
+  ];
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
+    <div className="p-6 space-y-5 max-w-7xl mx-auto">
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
@@ -130,8 +200,8 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
         </button>
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* KPI row — three tiles, everything else folds into the strip below */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <StatCard
           label="Today's Appointments"
           value="7"
@@ -142,91 +212,32 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
         <StatCard
           label="Daily Income"
           value={`₱${collectedIncome.toLocaleString()}`}
-          sub="Target: ₱20,000"
+          sub="Real-time · Target ₱20,000"
           icon={<IconDollarSign className="w-5 h-5 text-success-600" />}
           color="success"
           bar={{ value: incomeProgress }}
         />
         <StatCard
-          label="Medical Alerts"
-          value={String(activeAlerts.length)}
-          sub="Requires clinical review"
+          label="Needs Your Action"
+          value={String(exceptions.length)}
+          sub={
+            exceptions.length === 0
+              ? 'All clear — nothing pending'
+              : `${exceptions.filter(e => e.severity === 'alert').length} urgent · ${exceptions.filter(e => e.severity !== 'alert').length} review`
+          }
           icon={<IconAlert className="w-5 h-5 text-alert-600" />}
           color="alert"
-          urgent={activeAlerts.length > 0}
-        />
-        <StatCard
-          label="Active Orders"
-          value={String(activeOrderCount)}
-          sub={`${actionableOrders.length} need action${lowStockCount > 0 ? ` · ${lowStockCount} low stock` : ''}`}
-          icon={<IconPackage className="w-5 h-5 text-warning-600" />}
-          color="warning"
-          urgent={actionableOrders.length > 0}
+          urgent={exceptions.length > 0}
         />
       </div>
 
-      {/* Billing quick tiles */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {[
-          { label: 'Pending Payments', count: payments.filter(p => p.status === 'pending').length, module: 'payments' as BillingModule, tab: undefined },
-          { label: 'Pending Refunds', count: refundRequests.filter(r => r.status === 'pending').length, module: 'adjustments' as BillingModule, tab: 'refunds' as AdjustmentTab },
-          { label: 'Pending Cancellations', count: cancellationRequests.filter(r => r.status === 'pending').length, module: 'adjustments' as BillingModule, tab: 'cancellations' as AdjustmentTab },
-          { label: 'For Verification', count: payments.filter(p => p.status === 'for_verification').length, module: 'payments' as BillingModule, tab: undefined },
-        ].map(item => (
-          <button key={item.label} onClick={() => onOpenBilling(item.module, item.tab)}
-            className="bg-white rounded-xl border border-clinical-200 p-3 text-left hover:border-primary-300 transition-colors">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-medium text-clinical-600">{item.label}</p>
-              <IconChevronRight className="w-3.5 h-3.5 text-clinical-400" />
-            </div>
-            <p className="text-xl font-bold text-clinical-900 mt-1">{item.count}</p>
-          </button>
-        ))}
-      </div>
+      {/* Exception Queue — the doc's "surface only exceptions as actionable items" */}
+      <ExceptionQueue items={exceptions} />
 
-      {/* M5 / M15 / M18 / M20 status tiles */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="bg-white rounded-xl border border-clinical-200 p-4">
-          <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-warning-50 mb-3">
-            <IconClock className="w-5 h-5 text-warning-600" />
-          </div>
-          <p className="text-2xl font-semibold text-clinical-900">3</p>
-          <p className="text-xs text-clinical-500 mt-0.5">Pending Recalls</p>
-          <p className="text-[10px] text-clinical-400 mt-1">2 overdue · 1 due this week</p>
-        </div>
-        <div className="bg-white rounded-xl border border-clinical-200 p-4">
-          <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-alert-50 mb-3">
-            <IconAlert className="w-5 h-5 text-alert-600" />
-          </div>
-          <p className="text-2xl font-semibold text-clinical-900">₱{overdueTotal.toLocaleString()}</p>
-          <p className="text-xs text-clinical-500 mt-0.5">Overdue Balance</p>
-          <p className="text-[10px] text-clinical-400 mt-1">{overdueCount} account{overdueCount !== 1 ? 's' : ''} past due</p>
-        </div>
-        <div className="bg-white rounded-xl border border-clinical-200 p-4">
-          <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-warning-50 mb-3">
-            <IconAlert className="w-5 h-5 text-warning-600" />
-          </div>
-          <p className="text-2xl font-semibold text-clinical-900">{openAlertCount}</p>
-          <p className="text-xs text-clinical-500 mt-0.5">Open Stock Alerts</p>
-          <p className="text-[10px] text-clinical-400 mt-1">{lowStockCount} low/critical · {openOverstockNotes.length} overstock</p>
-        </div>
-        <button
-          onClick={() => onNavigate('orders')}
-          className="bg-white rounded-xl border border-clinical-200 p-4 text-left hover:border-primary-300 transition-colors"
-        >
-          <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-primary-50 mb-3">
-            <IconTruck className="w-5 h-5 text-primary-600" />
-          </div>
-          <p className="text-2xl font-semibold text-clinical-900">{orders.filter(o => o.status === 'queued').length}</p>
-          <p className="text-xs text-clinical-500 mt-0.5">Queued Orders</p>
-          <p className="text-[10px] text-clinical-400 mt-1">Awaiting EOD dispatch</p>
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Today's Schedule */}
+      {/* Patient-facing context: schedule + medical alerts */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
         <div className="xl:col-span-2 bg-white rounded-xl border border-clinical-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-clinical-100 flex items-center justify-between">
+          <div className="px-5 py-3 border-b border-clinical-100 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-clinical-800">Today's Schedule</h2>
             <button onClick={() => onNavigate('calendar')} className="text-xs text-primary-600 hover:text-primary-800 flex items-center gap-1">
               Full calendar <IconChevronRight className="w-3 h-3" />
@@ -234,11 +245,11 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
           </div>
           <div className="divide-y divide-clinical-50">
             {APPOINTMENTS.map((appt) => (
-              <div key={appt.time} className="flex items-center gap-4 px-5 py-3 hover:bg-clinical-50 transition-colors">
+              <div key={appt.time} className="flex items-center gap-4 px-5 py-2.5 hover:bg-clinical-50 transition-colors">
                 <div className="w-12 text-right shrink-0">
                   <span className="text-xs font-mono font-medium text-clinical-600">{appt.time}</span>
                 </div>
-                <div className={`w-1.5 h-10 rounded-full shrink-0 ${
+                <div className={`w-1.5 h-8 rounded-full shrink-0 ${
                   appt.status === 'in-progress' ? 'bg-primary-500' :
                   appt.status === 'confirmed'   ? 'bg-success-600' : 'bg-clinical-300'
                 }`} />
@@ -259,38 +270,51 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
           </div>
         </div>
 
-        {/* Right column */}
-        <div className="space-y-4">
-          {/* Medical Alerts */}
-          <div className="bg-white rounded-xl border border-alert-100 overflow-hidden">
-            <div className="px-4 py-3 bg-alert-50 border-b border-alert-100 flex items-center gap-2">
-              <IconAlert className="w-4 h-4 text-alert-600" />
-              <h2 className="text-sm font-semibold text-alert-700">Medical Alerts</h2>
-              {activeAlerts.length > 0 && (
-                <span className="ml-auto bg-alert-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-                  {activeAlerts.length}
-                </span>
-              )}
+        {/* Medical Alerts — non-dismissible during shift */}
+        <div className="bg-white rounded-xl border border-alert-100 overflow-hidden">
+          <div className="px-4 py-3 bg-alert-50 border-b border-alert-100 flex items-center gap-2">
+            <IconAlert className="w-4 h-4 text-alert-600" />
+            <h2 className="text-sm font-semibold text-alert-700">Medical Alerts</h2>
+            {MEDICAL_ALERTS.length > 0 && (
+              <span className="ml-auto bg-alert-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                {MEDICAL_ALERTS.length}
+              </span>
+            )}
+          </div>
+          {MEDICAL_ALERTS.length === 0 ? (
+            <div className="px-4 py-8 text-center">
+              <IconCheck className="w-8 h-8 text-success-600 mx-auto mb-2" />
+              <p className="text-xs text-clinical-500">No active medical alerts for today</p>
             </div>
-            {activeAlerts.length === 0 ? (
-              <div className="px-4 py-8 text-center">
-                <IconCheck className="w-8 h-8 text-success-600 mx-auto mb-2" />
-                <p className="text-xs text-clinical-500">No active medical alerts for today</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-clinical-50 max-h-56 overflow-y-auto">
-                {activeAlerts.map((alert) => (
-                  <div key={alert.id} className="px-4 py-3">
+          ) : (
+            <div className="divide-y divide-clinical-50 max-h-80 overflow-y-auto">
+              {MEDICAL_ALERTS.map((alert) => {
+                const reviewedAt = reviewedAlerts[alert.id];
+                const isReviewed = Boolean(reviewedAt);
+                return (
+                  <div key={alert.id} className={`px-4 py-3 transition-colors ${isReviewed ? 'bg-clinical-50/50' : ''}`}>
                     <div className="flex items-start justify-between gap-2 mb-1">
-                      <div>
-                        <span className="text-xs font-semibold text-clinical-800">{alert.patient}</span>
+                      <div className="min-w-0">
+                        <span className={`text-xs font-semibold ${isReviewed ? 'text-clinical-500' : 'text-clinical-800'}`}>{alert.patient}</span>
                         <span className="text-[10px] text-clinical-400 ml-1.5">· {alert.time}</span>
                       </div>
-                      <button onClick={() => setDismissedAlerts(p => [...p, alert.id])} className="text-clinical-300 hover:text-clinical-500 shrink-0">
-                        <IconX className="w-3.5 h-3.5" />
-                      </button>
+                      {isReviewed ? (
+                        <span className="shrink-0 text-[9px] font-semibold text-clinical-400 flex items-center gap-1">
+                          <IconCheck className="w-3 h-3 text-success-600" /> Reviewed {reviewedAt}
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setReviewedAlerts(prev => ({
+                            ...prev,
+                            [alert.id]: new Date().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
+                          }))}
+                          className="shrink-0 text-[10px] font-semibold text-clinical-500 hover:text-clinical-800 border border-clinical-200 rounded px-1.5 py-0.5 transition-colors"
+                        >
+                          Mark reviewed
+                        </button>
+                      )}
                     </div>
-                    <p className="text-xs text-alert-700 leading-relaxed mb-1.5">{alert.message}</p>
+                    <p className={`text-xs leading-relaxed mb-1.5 ${isReviewed ? 'text-clinical-500' : 'text-alert-700'}`}>{alert.message}</p>
                     <button
                       onClick={() => onViewPatient(alert.patientId, alert.patient, 'intake')}
                       className="inline-flex items-center gap-1 text-[10px] font-semibold text-primary-600 hover:text-primary-800"
@@ -298,390 +322,108 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
                       View Patient Intake Response <IconExternalLink className="w-3 h-3" />
                     </button>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Order status and receiving */}
-          <div className="bg-white rounded-xl border border-clinical-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-clinical-100 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <IconPackage className="w-4 h-4 text-primary-600" />
-                <h2 className="text-sm font-semibold text-clinical-800">Order Status</h2>
-              </div>
-              <button onClick={() => onNavigate('orders')} className="text-xs text-primary-600 hover:text-primary-800 flex items-center gap-1">
-                All orders <IconChevronRight className="w-3 h-3" />
-              </button>
-            </div>
-            {actionableOrders.length === 0 ? (
-              <div className="px-4 py-6 text-center">
-                <IconCheck className="w-6 h-6 text-success-500 mx-auto mb-1" />
-                <p className="text-xs text-clinical-500">No orders need action right now</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-clinical-50 max-h-60 overflow-y-auto">
-                {actionableOrders.map(order => (
-                  <OrderActionRow
-                    key={order.id}
-                    order={order}
-                    statusMeta={ORDER_STATUS_META}
-                    getSupplierName={getSupplierName}
-                    onConfirm={confirmReceived}
-                    onClassify={classifyResponse}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* M22 — Supplier Email Response Status + Bounce Alerts + Overstock Notes */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Supplier Response Status */}
-        <div className="bg-white rounded-xl border border-clinical-200 overflow-hidden">
-          <div className="px-4 py-3 border-b border-clinical-100 flex items-center gap-2">
-            <IconMail className="w-4 h-4 text-primary-600" />
-            <h2 className="text-sm font-semibold text-clinical-800">Supplier Response Status</h2>
-          </div>
-          <div className="grid grid-cols-2 gap-px bg-clinical-100">
-            {[
-              { label: 'Confirmed',    value: responseBreakdown.confirmed,   cls: 'text-success-700 bg-success-50' },
-              { label: 'Unavailable',  value: responseBreakdown.unavailable, cls: 'text-alert-700 bg-alert-50' },
-              { label: 'No Response',  value: responseBreakdown.no_response, cls: 'text-alert-700 bg-alert-50' },
-              { label: 'Unclear',      value: responseBreakdown.unclear,     cls: 'text-warning-700 bg-warning-50' },
-            ].map(cell => (
-              <div key={cell.label} className={`px-3 py-3 ${cell.cls}`}>
-                <p className="text-xl font-bold tabular-nums">{cell.value}</p>
-                <p className="text-[10px] font-semibold uppercase tracking-wide opacity-80 mt-0.5">{cell.label}</p>
-              </div>
-            ))}
-          </div>
-          <div className="px-4 py-2.5 border-t border-clinical-100 bg-clinical-50/60">
-            <p className="text-[10px] text-clinical-400 leading-relaxed">
-              Keyword-matched from supplier email replies. Ambiguous replies are routed to you for classification.
-            </p>
-          </div>
-        </div>
-
-        {/* Email Bounce Alerts */}
-        <div className="bg-white rounded-xl border border-clinical-200 overflow-hidden">
-          <div className="px-4 py-3 border-b border-clinical-100 flex items-center gap-2">
-            <IconAlert className="w-4 h-4 text-alert-600" />
-            <h2 className="text-sm font-semibold text-clinical-800">Email Bounce Alerts</h2>
-            {bounces.length > 0 && (
-              <span className="ml-auto bg-alert-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-                {bounces.length}
-              </span>
-            )}
-          </div>
-          {bounces.length === 0 ? (
-            <div className="px-4 py-8 text-center">
-              <IconCheck className="w-7 h-7 text-success-500 mx-auto mb-2" />
-              <p className="text-xs text-clinical-500">No delivery failures</p>
-              <p className="text-[10px] text-clinical-400 mt-1">All dispatches confirmed delivered.</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-clinical-50 max-h-56 overflow-y-auto">
-              {bounces.map(log => (
-                <div key={log.id} className="px-4 py-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-clinical-800 truncate">{log.recipientName}</p>
-                      <p className="text-[10px] font-mono text-clinical-500 truncate">{log.recipientEmail}</p>
-                    </div>
-                    <span className="text-[9px] font-bold text-alert-700 bg-alert-50 border border-alert-100 px-1.5 py-0.5 rounded shrink-0">
-                      BOUNCED
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-clinical-400 mt-1.5">
-                    {log.poRef} · {log.dispatchedAt}
-                  </p>
-                  <p className="text-[10px] text-alert-600 mt-1 leading-relaxed">
-                    SMTP delivery failed. Verify the supplier email in Module 23.
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Overstock Review Notes */}
-        <div className="bg-white rounded-xl border border-clinical-200 overflow-hidden">
-          <div className="px-4 py-3 border-b border-clinical-100 flex items-center gap-2">
-            <IconFileText className="w-4 h-4 text-primary-600" />
-            <h2 className="text-sm font-semibold text-clinical-800">Overstock Review Notes</h2>
-            {openOverstockNotes.length > 0 && (
-              <span className="ml-auto bg-primary-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-                {openOverstockNotes.length}
-              </span>
-            )}
-          </div>
-          {openOverstockNotes.length === 0 ? (
-            <div className="px-4 py-8 text-center">
-              <IconCheck className="w-7 h-7 text-success-500 mx-auto mb-2" />
-              <p className="text-xs text-clinical-500">No overstock alerts</p>
-              <p className="text-[10px] text-clinical-400 mt-1">All items within healthy range.</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-clinical-50 max-h-56 overflow-y-auto">
-              {openOverstockNotes.map(note => (
-                <div key={note.id} className="px-4 py-3">
-                  <div className="flex items-start justify-between gap-2 mb-1.5">
-                    <p className="text-xs font-semibold text-clinical-800 truncate">{note.itemName}</p>
-                    <button
-                      onClick={() => resolveOverstockNote(note.id)}
-                      className="text-[10px] font-semibold text-primary-700 hover:text-primary-900 shrink-0"
-                    >
-                      Resolve
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-clinical-500 leading-relaxed">{note.reviewNote}</p>
-                  <p className="text-[10px] text-clinical-400 mt-1.5">{note.createdAt}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Reroutes and escalations */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Reroute Events */}
-        <div className="bg-white rounded-xl border border-clinical-200 overflow-hidden">
-          <div className="px-5 py-3 border-b border-clinical-100 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-clinical-800">Rerouted Orders</h2>
-            <span className="text-[10px] text-clinical-400">{rerouteEvents.length} recent</span>
-          </div>
-          {rerouteEvents.length === 0 ? (
-            <div className="px-5 py-6 text-center text-xs text-clinical-400">No reroutes yet — all orders fulfilled directly.</div>
-          ) : (
-            <div className="divide-y divide-clinical-50">
-              {rerouteEvents.map(order => {
-                const linked = orders.find(o => o.id === order.linkedOrderId);
-                return (
-                  <div key={order.id} className="px-5 py-3 flex items-start gap-3 text-xs">
-                    <div className="w-2 h-2 rounded-full bg-warning-400 mt-1 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-clinical-900">{order.itemName}</p>
-                      <p className="text-clinical-500 truncate">
-                        {getSupplierName(order.supplierId)} → {linked ? getSupplierName(linked.supplierId) : '—'}
-                      </p>
-                      <p className="text-clinical-400">Reason: {order.responseClass === 'unavailable' ? 'Unavailable' : 'No Response'} · {order.updatedAt}</p>
-                    </div>
-                    {linked && (
-                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0 ${
-                        linked.status === 'sent' ? 'bg-primary-50 text-primary-600 border-primary-100' :
-                        linked.status === 'being_delivered' ? 'bg-primary-100 text-primary-700 border-primary-200' :
-                        linked.status === 'completed' ? 'bg-success-50 text-success-700 border-success-100' :
-                        'bg-clinical-100 text-clinical-600 border-clinical-200'
-                      }`}>{linked.status.replace('_', ' ')}</span>
-                    )}
-                  </div>
                 );
               })}
             </div>
           )}
         </div>
-
-        {/* Escalations */}
-        <div className="bg-white rounded-xl border border-clinical-200 overflow-hidden">
-          <div className="px-5 py-3 border-b border-clinical-100 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-clinical-800">Order Escalations</h2>
-            {escalations.length > 0 && (
-              <span className="text-[10px] font-bold bg-alert-500 text-white px-1.5 py-0.5 rounded-full">{escalations.length}</span>
-            )}
-          </div>
-          {escalations.length === 0 ? (
-            <div className="px-5 py-6 text-center text-xs text-clinical-400">No escalations — backup chain handling all reroutes.</div>
-          ) : (
-            <div className="divide-y divide-clinical-50">
-              {escalations.map(order => (
-                <div key={order.id} className="px-5 py-3 flex items-start gap-3 text-xs">
-                  <div className="w-2 h-2 rounded-full bg-alert-500 mt-1 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-clinical-900">{order.itemName}</p>
-                    <p className="text-clinical-500">{getSupplierName(order.supplierId)} · {order.responseClass}</p>
-                    <p className="text-alert-600 font-medium mt-0.5">Backup chain exhausted — manual action required</p>
-                  </div>
-                  <button
-                    onClick={() => onNavigate('orders')}
-                    className="shrink-0 px-2 py-1 bg-alert-50 text-alert-700 text-[10px] font-semibold rounded border border-alert-100 hover:bg-alert-100 transition-colors"
-                  >
-                    Handle
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
 
-      {/* Low stock summary strip */}
-      {(lowStockCount > 0 || expiringCount > 0) && (
-        <div className="bg-warning-50 border border-warning-100 rounded-xl px-5 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 text-xs">
-            <IconAlert className="w-4 h-4 text-warning-600 shrink-0" />
-            <span className="text-warning-700">
-              {lowStockCount > 0 && <><strong>{lowStockCount}</strong> item{lowStockCount > 1 ? 's' : ''} low/critical · </>}
-              {expiringCount > 0 && <><strong>{expiringCount}</strong> item{expiringCount > 1 ? 's' : ''} expiring soon</>}
-              {' '}— replenishment orders will be sent at end of day
-            </span>
-          </div>
-          <button onClick={() => onNavigate('inventory')} className="shrink-0 text-xs font-semibold text-warning-700 hover:text-warning-900 flex items-center gap-1">
-            View Inventory <IconChevronRight className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      {/* Expiry Alerts — M19 output */}
-      <ExpiryAlertsPanel onNavigate={() => onNavigate('inventory')} />
-
-      {/* Income summary — now fully computed from payments */}
-      <div className="bg-white rounded-xl border border-clinical-200 p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-clinical-800">Daily Income Breakdown</h2>
-          <span className="text-[10px] text-clinical-400">Live from Payment Processing · Module 16</span>
-        </div>
-        {incomeByService.length === 0 ? (
-          <div className="py-6 text-center">
-            <IconDollarSign className="w-7 h-7 text-clinical-300 mx-auto mb-2" />
-            <p className="text-xs text-clinical-500">No paid transactions today</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            {incomeByService.map(item => (
-              <div key={item.label} className="bg-clinical-50 rounded-lg p-3">
-                <p className="text-[11px] text-clinical-500 mb-1 truncate" title={item.label}>{item.label}</p>
-                <p className="text-base font-semibold text-clinical-900">₱{item.amount.toLocaleString()}</p>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="mt-4 flex items-center justify-between text-sm">
-          <span className="text-clinical-500">Collected today</span>
-          <span className="font-semibold text-clinical-900">₱{collectedIncome.toLocaleString()}</span>
-        </div>
-        <div className="mt-2 h-2 bg-clinical-100 rounded-full overflow-hidden">
-          <div className="h-full bg-success-600 rounded-full" style={{ width: `${incomeProgress}%` }} />
-        </div>
-        <div className="mt-1 flex justify-between text-[10px] text-clinical-400">
-          <span>{incomeProgress}% of daily target</span>
-          <span>₱{Math.max(20000 - collectedIncome, 0).toLocaleString()} remaining</span>
-        </div>
-      </div>
+      {/* Compact status strip — every secondary metric as a linkable chip */}
+      <CompactStatusStrip chips={compactChips} />
 
       {import.meta.env.DEV && <DemoTriggers />}
     </div>
   );
 }
 
-// ── M19 Expiry Alerts Panel ───────────────────────────────────
+// ── Exception Queue ───────────────────────────────────────────
 
-interface ExpiryAlertEntry {
-  itemId: string;
-  itemName: string;
-  unit: string;
-  expiredCount: number;
-  expiringCount: number;
-  expiredQty: number;
-  expiringQty: number;
-  soonestDays: number;
-}
-
-function ExpiryAlertsPanel({ onNavigate }: { onNavigate: () => void }) {
-  const { inventory, isExpired, isExpiringSoon, expiryAlertDays } = useClinic();
-
-  const alerts = useMemo<ExpiryAlertEntry[]>(() => {
-    const list: ExpiryAlertEntry[] = [];
-    inventory.forEach(item => {
-      const expired = item.batches.filter(b => isExpired(b.expiry));
-      const expiring = item.batches.filter(b => isExpiringSoon(b.expiry));
-      if (expired.length === 0 && expiring.length === 0) return;
-
-      const combined = [...expired, ...expiring];
-      const soonest = combined.reduce((a, b) =>
-        new Date(a.expiry) < new Date(b.expiry) ? a : b,
-      );
-      const soonestDays = Math.ceil(
-        (new Date(soonest.expiry).getTime() - Date.now()) / 86400000,
-      );
-
-      list.push({
-        itemId: item.id,
-        itemName: item.name,
-        unit: item.unit,
-        expiredCount: expired.length,
-        expiringCount: expiring.length,
-        expiredQty: expired.reduce((s, b) => s + b.qty, 0),
-        expiringQty: expiring.reduce((s, b) => s + b.qty, 0),
-        soonestDays,
-      });
-    });
-    return list.sort((a, b) => a.soonestDays - b.soonestDays);
-  }, [inventory, isExpired, isExpiringSoon]);
-
-  if (alerts.length === 0) return null;
-
-  const withExpired = alerts.filter(a => a.expiredCount > 0).length;
-  const onlyExpiring = alerts.filter(a => a.expiredCount === 0).length;
+function ExceptionQueue({ items }: { items: ExceptionItem[] }) {
+  if (items.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-success-100 p-5">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-success-50 flex items-center justify-center shrink-0">
+            <IconCheck className="w-5 h-5 text-success-600" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-clinical-800">All clear</p>
+            <p className="text-[11px] text-clinical-500">No orders, alerts, or reviews need your attention right now.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="bg-white rounded-xl border border-warning-100 overflow-hidden">
-      <div className="px-4 py-3 bg-warning-50 border-b border-warning-100 flex items-center gap-2">
-        <IconClock className="w-4 h-4 text-warning-600" />
-        <h2 className="text-sm font-semibold text-warning-700">Expiry Alerts</h2>
-        <span className="ml-auto text-[10px] font-semibold text-warning-600">
-          {alerts.length} item{alerts.length > 1 ? 's' : ''} · alert window {expiryAlertDays}d
+    <div className="bg-white rounded-xl border border-clinical-200 overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-clinical-100 bg-clinical-50 flex items-center gap-2">
+        <IconAlert className="w-4 h-4 text-alert-600" />
+        <p className="text-xs font-semibold text-clinical-800 uppercase tracking-wide">Needs your action</p>
+        <span className="ml-auto text-[10px] font-bold bg-alert-600 text-white px-1.5 py-0.5 rounded-full">
+          {items.length}
         </span>
       </div>
-      <div className="divide-y divide-clinical-50 max-h-64 overflow-y-auto">
-        {alerts.map(a => (
-          <div key={a.itemId} className="px-4 py-3 flex items-start gap-3">
-            <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${
-              a.expiredCount > 0 ? 'bg-alert-500' : 'bg-warning-500'
-            }`} />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold text-clinical-800 truncate">{a.itemName}</p>
-              <p className="text-[10px] text-clinical-500 mt-0.5">
-                {a.expiredCount > 0 && (
-                  <>
-                    <span className="font-semibold text-alert-600">
-                      {a.expiredCount} expired ({a.expiredQty} {a.unit})
-                    </span>
-                    {a.expiringCount > 0 && ' · '}
-                  </>
-                )}
-                {a.expiringCount > 0 && (
-                  <span>
-                    {a.expiringCount} expiring ({a.expiringQty} {a.unit})
-                  </span>
-                )}
-              </p>
+      <div className="divide-y divide-clinical-50">
+        {items.map(item => {
+          const dotColor =
+            item.severity === 'alert' ? 'bg-alert-500' :
+            item.severity === 'warning' ? 'bg-warning-500' : 'bg-primary-500';
+          const actionClass =
+            item.severity === 'alert' ? 'bg-alert-600 text-white hover:bg-alert-700' :
+            item.severity === 'warning' ? 'border border-warning-300 text-warning-700 hover:bg-warning-50' :
+            'bg-primary-700 text-white hover:bg-primary-800';
+          return (
+            <div key={item.id} className="flex items-center gap-3 px-4 py-2.5">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-clinical-800 truncate">{item.title}</p>
+                <p className="text-[10px] text-clinical-500 truncate">{item.detail}</p>
+              </div>
+              <button
+                onClick={item.onAction}
+                className={`shrink-0 px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-colors ${actionClass}`}
+              >
+                {item.actionLabel}
+              </button>
             </div>
-            <span className="shrink-0 text-[10px] font-semibold text-clinical-500 whitespace-nowrap">
-              {a.soonestDays < 0 ? `${Math.abs(a.soonestDays)}d ago` : `${a.soonestDays}d`}
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="px-4 py-2 border-t border-clinical-100 bg-clinical-50/60 flex items-center justify-between">
-        <p className="text-[10px] text-clinical-400">
-          {withExpired} item{withExpired === 1 ? '' : 's'} with expired stock · {onlyExpiring} expiring soon
-        </p>
-        <button
-          onClick={onNavigate}
-          className="text-[10px] font-semibold text-primary-600 hover:text-primary-800 flex items-center gap-1"
-        >
-          Review in Inventory <IconChevronRight className="w-3 h-3" />
-        </button>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-// ── Subcomponents ─────────────────────────────────────────────
+// ── Compact status strip ──────────────────────────────────────
+
+function CompactStatusStrip({ chips }: {
+  chips: { label: string; onClick: () => void; tone?: 'alert' | 'warning' }[];
+}) {
+  return (
+    <div className="bg-white rounded-xl border border-clinical-200 px-3 py-2 flex items-center gap-1.5 overflow-x-auto">
+      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-clinical-400 px-1">At a glance</span>
+      <span className="shrink-0 w-px h-4 bg-clinical-200" />
+      {chips.map((chip, i) => {
+        const toneClass =
+          chip.tone === 'alert' ? 'bg-alert-50 text-alert-700 hover:bg-alert-100' :
+          chip.tone === 'warning' ? 'bg-warning-50 text-warning-700 hover:bg-warning-100' :
+          'bg-clinical-50 text-clinical-700 hover:bg-clinical-100';
+        return (
+          <button
+            key={i}
+            onClick={chip.onClick}
+            className={`shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-colors ${toneClass}`}
+          >
+            {chip.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── KPI card ──────────────────────────────────────────────────
 
 function StatCard({
   label, value, sub, icon, color, urgent, bar
@@ -715,60 +457,7 @@ function StatCard({
   );
 }
 
-function OrderActionRow({ order, statusMeta, getSupplierName, onConfirm, onClassify }: {
-  order: SupplyOrder;
-  statusMeta: Record<string, { label: string; cls: string }>;
-  getSupplierName: (id: string) => string;
-  onConfirm: (id: string) => void;
-  onClassify: (id: string, cls: ResponseClass) => void;
-}) {
-  const [classifying, setClassifying] = useState(false);
-  const meta = statusMeta[order.status];
-  return (
-    <div className="px-4 py-3 space-y-2">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold text-clinical-900 truncate">{order.itemName}</p>
-          <p className="text-[10px] text-clinical-500">{getSupplierName(order.supplierId)} · {order.qty} {order.unit}</p>
-        </div>
-        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0 ${meta?.cls}`}>{meta?.label}</span>
-      </div>
-      {order.supplierResponse && (
-        <p className="text-[10px] text-clinical-500 italic">"{order.supplierResponse}"</p>
-      )}
-      {order.status === 'being_delivered' && (
-        <button
-          onClick={() => onConfirm(order.id)}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-success-600 text-white text-xs font-semibold rounded-lg hover:bg-success-700 transition-colors"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          Confirm Received
-        </button>
-      )}
-      {order.status === 'unclear' && !classifying && (
-        <button onClick={() => setClassifying(true)} className="w-full px-3 py-1.5 bg-warning-500 text-white text-xs font-semibold rounded-lg hover:bg-warning-600 transition-colors">
-          Classify Response
-        </button>
-      )}
-      {order.status === 'unclear' && classifying && (
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-clinical-500 mr-1">Mark as:</span>
-          <button onClick={() => { setClassifying(false); onClassify(order.id, 'confirmed'); }} className="px-2 py-1 bg-success-600 text-white text-[10px] font-bold rounded hover:bg-success-700">Confirmed</button>
-          <button onClick={() => { setClassifying(false); onClassify(order.id, 'unavailable'); }} className="px-2 py-1 bg-alert-600 text-white text-[10px] font-bold rounded hover:bg-alert-700">Unavailable</button>
-          <button onClick={() => setClassifying(false)} className="text-[10px] text-clinical-400 hover:text-clinical-600">Cancel</button>
-        </div>
-      )}
-      {(order.status === 'unavailable' || order.status === 'no_response') && (
-        <div className="flex items-center gap-2 p-2 bg-alert-50 rounded-lg border border-alert-100">
-          <IconAlert className="w-3.5 h-3.5 text-alert-600 shrink-0" />
-          <p className="text-[10px] text-alert-700 leading-relaxed">Backup chain exhausted — manual follow-up required.</p>
-        </div>
-      )}
-    </div>
-  );
-}
+// ── Appointment status badge ──────────────────────────────────
 
 function AppointmentBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; cls: string }> = {

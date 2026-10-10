@@ -79,11 +79,11 @@ body {
 }
 
 /*
- * Scoped print styles for the PO preview drawer.
+ * Scoped print styles for the PO preview and audit-trail drawers.
  *
- * When the doctor clicks "Print / Save as PDF" inside the purchase order
- * drawer, the browser print dialog opens with the whole page hidden except
- * the element tagged `#po-print-region`. The `position: fixed` lift takes
+ * When the doctor clicks "Print / Save as PDF" (PO) or "Export log" (audit
+ * trail), the browser print dialog opens with the whole page hidden except
+ * the element tagged with the matching id. The `position: fixed` lift takes
  * the region out of the drawer's absolutely-positioned parent so it fills
  * the printed page cleanly. `@page` sets the paper size and margins.
  */
@@ -93,11 +93,14 @@ body {
   }
 
   #po-print-region,
-  #po-print-region * {
+  #po-print-region *,
+  #audit-print-region,
+  #audit-print-region * {
     visibility: visible !important;
   }
 
-  #po-print-region {
+  #po-print-region,
+  #audit-print-region {
     position: fixed !important;
     left: 0 !important;
     top: 0 !important;
