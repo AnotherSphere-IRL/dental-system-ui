@@ -278,7 +278,8 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       </div>
 
       {/* Exception Queue — hero position. The doc's core intent per §13 #5:
-          "Surface only exceptions as actionable items." */}
+          "Surface only exceptions as actionable items." Capped at 5 rows
+          with an inline expand toggle so the panel stays compact. */}
       <ExceptionQueue items={exceptions} />
 
       {/* Supplier Response Status Board — M21 §13 #4. Live view of the four
@@ -287,8 +288,11 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       <SupplierResponseBoard orders={orders} onNavigate={onNavigate} />
 
       {/* Patient-facing context: schedule + medical alerts. Both panels are
-          secondary to the exception workflow and sit below it in the fold. */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          secondary to the exception workflow and sit below it in the fold.
+          `items-start` prevents the shorter column (alerts) from being
+          stretched to match the taller one (schedule), which would leave
+          visible dead space inside its card. */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-start">
         <div className="xl:col-span-2 bg-white rounded-xl border border-clinical-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-clinical-100 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-clinical-800">Today's Schedule</h2>
@@ -323,9 +327,9 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
           </div>
         </div>
 
-        {/* Medical Alerts — non-dismissible during shift. Compact: top 3
-            visible, rest scrollable. Reviewed alerts stay in the list with
-            their timestamp so a critical allergy can't be silently dismissed. */}
+        {/* Medical Alerts — natural height, no artificial cap. Reviewed
+            alerts stay in the list with their timestamp so a critical
+            allergy can't be silently dismissed. */}
         <div className="bg-white rounded-xl border border-alert-100 overflow-hidden">
           <div className="px-4 py-3 bg-alert-50 border-b border-alert-100 flex items-center gap-2">
             <IconAlert className="w-4 h-4 text-alert-600" />
@@ -342,7 +346,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
               <p className="text-xs text-clinical-500">No active medical alerts for today</p>
             </div>
           ) : (
-            <div className="divide-y divide-clinical-50 max-h-52 overflow-y-auto">
+            <div className="divide-y divide-clinical-50">
               {MEDICAL_ALERTS.map((alert) => {
                 const reviewedAt = reviewedAlerts[alert.id];
                 const isReviewed = Boolean(reviewedAt);
@@ -439,7 +443,15 @@ function KpiMetric({
 
 // ── Exception Queue ───────────────────────────────────────────
 
+const EXCEPTION_CAP = 5;
+// Rows that fit within the max-h-96 (~384px) expanded viewport at the
+// current row height. Used to gate the bottom fade so it only appears when
+// the list actually overflows.
+const EXCEPTION_VISIBLE_ROWS = 12;
+
 function ExceptionQueue({ items }: { items: ExceptionItem[] }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (items.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-success-100 p-5">
@@ -456,41 +468,77 @@ function ExceptionQueue({ items }: { items: ExceptionItem[] }) {
     );
   }
 
+  // Items arrive pre-sorted by severity (alert → warning → info), so a simple
+  // head-slice naturally keeps the most urgent in view. Cap at 5 by default —
+  // the queue is a triage surface, not a full log. Anything hidden is one
+  // click away.
+  const visible = expanded ? items : items.slice(0, EXCEPTION_CAP);
+  const hiddenCount = items.length - visible.length;
+  const canScroll = expanded && visible.length > EXCEPTION_VISIBLE_ROWS;
+
   return (
     <div className="bg-white rounded-xl border border-clinical-200 overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-clinical-100 bg-clinical-50 flex items-center gap-2">
+      <div className="px-4 py-2 border-b border-clinical-100 bg-clinical-50 flex items-center gap-2">
         <IconAlert className="w-4 h-4 text-alert-600" />
         <p className="text-xs font-semibold text-clinical-800 uppercase tracking-wide">Needs your action</p>
         <span className="ml-auto text-[10px] font-bold bg-alert-600 text-white px-1.5 py-0.5 rounded-full">
           {items.length}
         </span>
       </div>
-      <div className="divide-y divide-clinical-50">
-        {items.map(item => {
-          const dotColor =
-            item.severity === 'alert' ? 'bg-alert-500' :
-            item.severity === 'warning' ? 'bg-warning-500' : 'bg-primary-500';
-          const actionClass =
-            item.severity === 'alert' ? 'bg-alert-600 text-white hover:bg-alert-700' :
-            item.severity === 'warning' ? 'border border-warning-300 text-warning-700 hover:bg-warning-50' :
-            'bg-primary-700 text-white hover:bg-primary-800';
-          return (
-            <div key={item.id} className="flex items-center gap-3 px-4 py-2.5">
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold text-clinical-800 truncate">{item.title}</p>
-                <p className="text-[10px] text-clinical-500 truncate">{item.detail}</p>
+      <div className="relative">
+        <div className={`divide-y divide-clinical-50 ${expanded ? 'max-h-96 overflow-y-auto' : ''}`}>
+          {visible.map(item => {
+            const dotColor =
+              item.severity === 'alert' ? 'bg-alert-500' :
+              item.severity === 'warning' ? 'bg-warning-500' : 'bg-primary-500';
+            const actionClass =
+              item.severity === 'alert' ? 'bg-alert-600 text-white hover:bg-alert-700' :
+              item.severity === 'warning' ? 'border border-warning-300 text-warning-700 hover:bg-warning-50' :
+              'bg-primary-700 text-white hover:bg-primary-800';
+            return (
+              <div key={item.id} className="flex items-center gap-3 px-4 py-1.5">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+                <div className="flex-1 min-w-0 flex items-baseline gap-2">
+                  <p className="text-xs font-semibold text-clinical-800 truncate shrink-0 max-w-[55%]">{item.title}</p>
+                  <p className="text-[10px] text-clinical-500 truncate">{item.detail}</p>
+                </div>
+                <button
+                  onClick={item.onAction}
+                  className={`shrink-0 px-2.5 py-1 text-[10px] font-semibold rounded-md transition-colors ${actionClass}`}
+                >
+                  {item.actionLabel}
+                </button>
               </div>
-              <button
-                onClick={item.onAction}
-                className={`shrink-0 px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-colors ${actionClass}`}
-              >
-                {item.actionLabel}
-              </button>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
+        {/* Fade at the bottom edge only when the expanded list actually
+            overflows the max-h-96 cap. Keeps the collapsed view unaltered
+            and doesn't show a misleading gradient when nothing is below the
+            fold. */}
+        {canScroll && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-white to-transparent"
+          />
+        )}
       </div>
+      {hiddenCount > 0 && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="w-full text-[10px] font-semibold text-clinical-500 hover:text-clinical-800 hover:bg-clinical-50 border-t border-clinical-100 py-1.5 transition-colors"
+        >
+          + {hiddenCount} more
+        </button>
+      )}
+      {expanded && items.length > EXCEPTION_CAP && (
+        <button
+          onClick={() => setExpanded(false)}
+          className="w-full text-[10px] font-semibold text-clinical-500 hover:text-clinical-800 hover:bg-clinical-50 border-t border-clinical-100 py-1.5 transition-colors"
+        >
+          Show top {EXCEPTION_CAP}
+        </button>
+      )}
     </div>
   );
 }
