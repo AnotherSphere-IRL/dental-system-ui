@@ -1,9 +1,8 @@
 import { useState, useMemo } from 'react';
 import DemoTriggers from './DemoTriggers';
 import {
-  IconAlert, IconCheck, IconClock, IconDollarSign,
-  IconUsers, IconPackage, IconExternalLink, IconChevronRight,
-  IconMail, IconTruck,
+  IconAlert, IconCheck, IconChevronRight, IconClock, IconDollarSign,
+  IconExternalLink, IconMail, IconPackage, IconUsers,
 } from '../icons';
 import { useClinic, type SupplyOrder, type ResponseClass } from '../../context/ClinicContext';
 import type { ProfileTab } from './PatientProfile';
@@ -65,7 +64,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
   // ── KPI aggregates ────────────────────────────────────────
   const lowStockCount = inventory.filter(i => ['critical', 'low'].includes(getStockStatus(i) as 'critical' | 'low')).length;
   const expiringCount = inventory.filter(i => i.batches.some(b => isExpiringSoon(b.expiry) || isExpired(b.expiry))).length;
-  const openAlertCount = inventoryAlertLog.filter(a => !a.acknowledged).length;
 
   const collectedIncome = payments
     .filter(p => p.status === 'paid')
@@ -108,15 +106,17 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 3. Email bounces — supplier email needs verification.
+    // 3. Email bounces — supplier email needs verification. The action
+    // points at the order's timeline where the bounce is logged; the fix
+    // surface belongs to the supplier record (Module 23, out of scope).
     orderDispatchLog.filter(l => l.deliveryStatus === 'bounced').forEach(l => {
       items.push({
         id: `bounce-${l.id}`,
         severity: 'alert',
         title: `Email bounce · ${l.recipientName}`,
-        detail: `${l.poRef} · ${l.recipientEmail}`,
-        actionLabel: 'Fix email →',
-        onAction: () => onNavigate('suppliers'),
+        detail: `${l.poRef} · ${l.recipientEmail} · verify supplier email`,
+        actionLabel: 'View order →',
+        onAction: () => onNavigate('orders'),
       });
     });
 
@@ -219,96 +219,76 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
     inventory, inventoryAlertLog, isExpired, isExpiringSoon,
   ]);
 
-  // ── Compact status strip chips ────────────────────────────
-  const compactChips = [
-    {
-      label: `Billing · ${payments.filter(p => p.status === 'pending').length} pay · ${refundRequests.filter(r => r.status === 'pending').length} refund`,
-      onClick: () => onOpenBilling('payments'),
-      tone: payments.filter(p => p.status === 'pending').length + refundRequests.filter(r => r.status === 'pending').length > 0 ? 'warning' as const : undefined,
-    },
-    {
-      label: `Supply · ${lowStockCount} low · ${expiringCount} expiring`,
-      onClick: () => onNavigate('inventory'),
-      tone: lowStockCount > 0 ? 'warning' as const : undefined,
-    },
-    {
-      label: `Stock alerts · ${openAlertCount} open`,
-      onClick: () => onNavigate('inventory'),
-      tone: openAlertCount > 0 ? 'warning' as const : undefined,
-    },
-    {
-      label: `Rerouted · ${orders.filter(o => o.status === 'rerouted').length}`,
-      onClick: () => onNavigate('orders'),
-      tone: undefined,
-    },
-    {
-      // M21 §3 Inputs — "Sent Orders / Order Notifications - Module 20".
-      // Surface the count of POs currently awaiting supplier reply.
-      label: `Orders · ${orders.filter(o => o.status === 'sent').length} awaiting response`,
-      onClick: () => onNavigate('orders'),
-      tone: undefined,
-    },
-    {
-      label: `Overdue · ₱${overdueTotal.toLocaleString()} (${overdueAccounts.length})`,
-      onClick: () => onOpenBilling('balances'),
-      tone: overdueTotal > 0 ? 'alert' as const : undefined,
-    },
-  ];
-
   return (
-    <div className="p-6 space-y-5 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-clinical-900 font-display">Good morning, Dr. Reyes</h1>
-          <p className="text-sm text-clinical-500 mt-0.5">
-            {new Date().toLocaleDateString('en-PH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-          </p>
+    <div className="p-6 space-y-4 max-w-7xl mx-auto">
+      {/* Header band — greeting + walk-in + inline KPI metrics.
+          Compression per M21 §13 #2 "one-screen visibility": merging the
+          greeting row and KPI row into a single band brings the exception
+          queue above the fold on a 1080p display. */}
+      <div className="bg-white rounded-xl border border-clinical-200 p-5">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h1 className="text-lg font-semibold text-clinical-900 font-display">Good morning, Dr. Reyes</h1>
+            <p className="text-xs text-clinical-500 mt-0.5">
+              {new Date().toLocaleDateString('en-PH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            </p>
+          </div>
+          <button
+            onClick={() => onNavigate('scheduling')}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors shrink-0"
+          >
+            + Walk-in
+          </button>
         </div>
-        <button
-          onClick={() => onNavigate('scheduling')}
-          className="flex items-center gap-2 px-3 py-2 text-sm font-medium bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors"
-        >
-          + Walk-in
-        </button>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-4 border-t border-clinical-100">
+          <KpiMetric
+            icon={<IconUsers className="w-3.5 h-3.5" />}
+            label="Appointments"
+            value="7"
+            sub="3 completed · 4 upcoming"
+            onClick={() => onNavigate('scheduling')}
+          />
+          <KpiMetric
+            icon={<IconDollarSign className="w-3.5 h-3.5" />}
+            label="Daily income"
+            value={`₱${collectedIncome.toLocaleString()}`}
+            sub="Target ₱20,000"
+            bar={incomeProgress}
+            tone="success"
+            onClick={() => onOpenBilling('reports')}
+          />
+          <KpiMetric
+            icon={<IconPackage className="w-3.5 h-3.5" />}
+            label="Supply"
+            value={`${lowStockCount} low`}
+            sub={`${expiringCount} expiring`}
+            tone={lowStockCount > 0 ? 'warning' : undefined}
+            onClick={() => onNavigate('inventory')}
+          />
+          <KpiMetric
+            icon={<IconAlert className="w-3.5 h-3.5" />}
+            label="Overdue"
+            value={`₱${overdueTotal.toLocaleString()}`}
+            sub={`${overdueAccounts.length} account${overdueAccounts.length === 1 ? '' : 's'}`}
+            tone={overdueTotal > 0 ? 'alert' : undefined}
+            onClick={() => onOpenBilling('balances')}
+          />
+        </div>
       </div>
 
-      {/* KPI row — three tiles, everything else folds into the strip below */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <StatCard
-          label="Today's Appointments"
-          value="7"
-          sub="3 completed · 4 upcoming"
-          icon={<IconUsers className="w-5 h-5 text-primary-600" />}
-          color="primary"
-        />
-        <StatCard
-          label="Daily Income"
-          value={`₱${collectedIncome.toLocaleString()}`}
-          sub="Real-time · Target ₱20,000"
-          icon={<IconDollarSign className="w-5 h-5 text-success-600" />}
-          color="success"
-          bar={{ value: incomeProgress }}
-        />
-        <StatCard
-          label="Needs Your Action"
-          value={String(exceptions.length)}
-          sub={
-            exceptions.length === 0
-              ? 'All clear — nothing pending'
-              : `${exceptions.filter(e => e.severity === 'alert').length} urgent · ${exceptions.filter(e => e.severity !== 'alert').length} review`
-          }
-          icon={<IconAlert className="w-5 h-5 text-alert-600" />}
-          color="alert"
-          urgent={exceptions.length > 0}
-        />
-      </div>
-
-      {/* Exception Queue — the doc's "surface only exceptions as actionable items" */}
+      {/* Exception Queue — hero position. The doc's core intent per §13 #5:
+          "Surface only exceptions as actionable items." */}
       <ExceptionQueue items={exceptions} />
 
-      {/* Patient-facing context: schedule + medical alerts */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+      {/* Supplier Response Status Board — M21 §13 #4. Live view of the four
+          possible reply states so the doctor doesn't have to open Orders to
+          know what's pending. */}
+      <SupplierResponseBoard orders={orders} onNavigate={onNavigate} />
+
+      {/* Patient-facing context: schedule + medical alerts. Both panels are
+          secondary to the exception workflow and sit below it in the fold. */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
         <div className="xl:col-span-2 bg-white rounded-xl border border-clinical-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-clinical-100 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-clinical-800">Today's Schedule</h2>
@@ -343,7 +323,9 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
           </div>
         </div>
 
-        {/* Medical Alerts — non-dismissible during shift */}
+        {/* Medical Alerts — non-dismissible during shift. Compact: top 3
+            visible, rest scrollable. Reviewed alerts stay in the list with
+            their timestamp so a critical allergy can't be silently dismissed. */}
         <div className="bg-white rounded-xl border border-alert-100 overflow-hidden">
           <div className="px-4 py-3 bg-alert-50 border-b border-alert-100 flex items-center gap-2">
             <IconAlert className="w-4 h-4 text-alert-600" />
@@ -360,12 +342,12 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
               <p className="text-xs text-clinical-500">No active medical alerts for today</p>
             </div>
           ) : (
-            <div className="divide-y divide-clinical-50 max-h-80 overflow-y-auto">
+            <div className="divide-y divide-clinical-50 max-h-52 overflow-y-auto">
               {MEDICAL_ALERTS.map((alert) => {
                 const reviewedAt = reviewedAlerts[alert.id];
                 const isReviewed = Boolean(reviewedAt);
                 return (
-                  <div key={alert.id} className={`px-4 py-3 transition-colors ${isReviewed ? 'bg-clinical-50/50' : ''}`}>
+                  <div key={alert.id} className={`px-4 py-2.5 transition-colors ${isReviewed ? 'bg-clinical-50/50' : ''}`}>
                     <div className="flex items-start justify-between gap-2 mb-1">
                       <div className="min-w-0">
                         <span className={`text-xs font-semibold ${isReviewed ? 'text-clinical-500' : 'text-clinical-800'}`}>{alert.patient}</span>
@@ -373,7 +355,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
                       </div>
                       {isReviewed ? (
                         <span className="shrink-0 text-[9px] font-semibold text-clinical-400 flex items-center gap-1">
-                          <IconCheck className="w-3 h-3 text-success-600" /> Reviewed {reviewedAt}
+                          <IconCheck className="w-3 h-3 text-success-600" /> {reviewedAt}
                         </span>
                       ) : (
                         <button
@@ -387,7 +369,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
                         </button>
                       )}
                     </div>
-                    <p className={`text-xs leading-relaxed mb-1.5 ${isReviewed ? 'text-clinical-500' : 'text-alert-700'}`}>{alert.message}</p>
+                    <p className={`text-xs leading-relaxed mb-1 ${isReviewed ? 'text-clinical-500' : 'text-alert-700'}`}>{alert.message}</p>
                     <button
                       onClick={() => onViewPatient(alert.patientId, alert.patient, 'intake')}
                       className="inline-flex items-center gap-1 text-[10px] font-semibold text-primary-600 hover:text-primary-800"
@@ -402,11 +384,56 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
         </div>
       </div>
 
-      {/* Compact status strip — every secondary metric as a linkable chip */}
-      <CompactStatusStrip chips={compactChips} />
-
       {import.meta.env.DEV && <DemoTriggers />}
     </div>
+  );
+}
+
+// ── KPI metric (inline header strip) ──────────────────────────
+
+function KpiMetric({
+  icon, label, value, sub, bar, tone, onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+  bar?: number;
+  tone?: 'alert' | 'warning' | 'success';
+  onClick: () => void;
+}) {
+  const valueClass =
+    tone === 'alert'   ? 'text-alert-700' :
+    tone === 'warning' ? 'text-warning-700' :
+    tone === 'success' ? 'text-success-700' :
+    'text-clinical-900';
+  const barClass =
+    tone === 'alert'   ? 'bg-alert-600' :
+    tone === 'warning' ? 'bg-warning-600' :
+    'bg-success-600';
+  const iconClass =
+    tone === 'alert'   ? 'text-alert-500' :
+    tone === 'warning' ? 'text-warning-500' :
+    tone === 'success' ? 'text-success-500' :
+    'text-clinical-400';
+
+  return (
+    <button
+      onClick={onClick}
+      className="text-left rounded-lg -mx-2 px-2 py-1 transition-colors hover:bg-clinical-50"
+    >
+      <div className={`flex items-center gap-1.5 ${iconClass}`}>
+        {icon}
+        <span className="text-[10px] font-semibold uppercase tracking-wider">{label}</span>
+      </div>
+      <p className={`text-lg font-bold mt-1 tabular-nums leading-none ${valueClass}`}>{value}</p>
+      {bar !== undefined && (
+        <div className="mt-1.5 h-1 bg-clinical-100 rounded-full overflow-hidden max-w-[140px]">
+          <div className={`h-full ${barClass} rounded-full transition-all`} style={{ width: `${bar}%` }} />
+        </div>
+      )}
+      <p className="text-[10px] text-clinical-400 mt-1">{sub}</p>
+    </button>
   );
 }
 
@@ -468,64 +495,75 @@ function ExceptionQueue({ items }: { items: ExceptionItem[] }) {
   );
 }
 
-// ── Compact status strip ──────────────────────────────────────
+// ── Supplier Response Status Board ────────────────────────────
+// M21 §13 #4: "Display supplier email response statuses ... prominently."
+// Four tiles — one per reply state defined in M22 §8. Clicking any tile
+// opens the Orders view where the doctor can act on individual orders.
 
-function CompactStatusStrip({ chips }: {
-  chips: { label: string; onClick: () => void; tone?: 'alert' | 'warning' }[];
-}) {
-  return (
-    <div className="bg-white rounded-xl border border-clinical-200 px-3 py-2 flex items-center gap-1.5 overflow-x-auto">
-      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-clinical-400 px-1">At a glance</span>
-      <span className="shrink-0 w-px h-4 bg-clinical-200" />
-      {chips.map((chip, i) => {
-        const toneClass =
-          chip.tone === 'alert' ? 'bg-alert-50 text-alert-700 hover:bg-alert-100' :
-          chip.tone === 'warning' ? 'bg-warning-50 text-warning-700 hover:bg-warning-100' :
-          'bg-clinical-50 text-clinical-700 hover:bg-clinical-100';
-        return (
-          <button
-            key={i}
-            onClick={chip.onClick}
-            className={`shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-colors ${toneClass}`}
-          >
-            {chip.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// ── KPI card ──────────────────────────────────────────────────
-
-function StatCard({
-  label, value, sub, icon, color, urgent, bar
+function SupplierResponseBoard({
+  orders,
+  onNavigate,
 }: {
-  label: string; value: string; sub: string; icon: React.ReactNode;
-  color: 'primary' | 'success' | 'alert' | 'warning';
-  urgent?: boolean; bar?: { value: number };
+  orders: SupplyOrder[];
+  onNavigate: (v: View) => void;
 }) {
-  const bgMap = { primary: 'bg-primary-50', success: 'bg-success-50', alert: 'bg-alert-50', warning: 'bg-warning-50' };
+  const counts = useMemo(() => ({
+    sent: orders.filter(o => o.status === 'sent').length,
+    confirmed: orders.filter(o => o.status === 'being_delivered').length,
+    unclear: orders.filter(o => o.status === 'unclear').length,
+    escalated: orders.filter(o =>
+      ['unavailable', 'no_response'].includes(o.status) && !o.linkedOrderId
+    ).length,
+  }), [orders]);
+
+  const tiles: {
+    key: keyof typeof counts;
+    label: string;
+    sub: string;
+    icon: React.FC<{ className?: string }>;
+    cls: string;
+  }[] = [
+    { key: 'sent',      label: 'Sent',      sub: 'awaiting response',    icon: IconMail,    cls: 'border-clinical-200 bg-clinical-50 text-clinical-700' },
+    { key: 'confirmed', label: 'Confirmed', sub: 'being delivered',      icon: IconPackage, cls: 'border-success-200 bg-success-50 text-success-700' },
+    { key: 'unclear',   label: 'Unclear',   sub: 'needs classification', icon: IconClock,   cls: 'border-warning-200 bg-warning-50 text-warning-700' },
+    { key: 'escalated', label: 'Escalated', sub: 'chain exhausted',      icon: IconAlert,   cls: 'border-alert-200 bg-alert-50 text-alert-700' },
+  ];
+
   return (
-    <div className={`bg-white rounded-xl border p-4 ${urgent ? 'border-alert-200' : 'border-clinical-200'}`}>
-      <div className="flex items-start justify-between mb-3">
-        <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${bgMap[color]}`}>
-          {icon}
+    <div className="bg-white rounded-xl border border-clinical-200 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-xs font-semibold text-clinical-800">Supplier Response Status</p>
+          <p className="text-[10px] text-clinical-500 mt-0.5">Live order pipeline · click a tile to open Orders</p>
         </div>
-        {urgent && (
-          <span className="text-[10px] font-bold text-alert-600 bg-alert-50 px-1.5 py-0.5 rounded border border-alert-100">
-            URGENT
-          </span>
-        )}
+        <button
+          onClick={() => onNavigate('orders')}
+          className="text-[10px] font-semibold text-primary-600 hover:text-primary-800 shrink-0"
+        >
+          View all orders →
+        </button>
       </div>
-      <p className="text-2xl font-semibold text-clinical-900">{value}</p>
-      <p className="text-xs text-clinical-500 mt-0.5">{label}</p>
-      <p className="text-[10px] text-clinical-400 mt-1">{sub}</p>
-      {bar && (
-        <div className="mt-2 h-1 bg-clinical-100 rounded-full overflow-hidden">
-          <div className="h-full bg-success-600 rounded-full" style={{ width: `${bar.value}%` }} />
-        </div>
-      )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {tiles.map(tile => {
+          const Icon = tile.icon;
+          return (
+            <button
+              key={tile.key}
+              onClick={() => onNavigate('orders')}
+              className={`flex items-center gap-3 rounded-lg border p-3 text-left transition-all hover:shadow-sm ${tile.cls}`}
+            >
+              <div className="w-8 h-8 rounded-lg bg-white/60 flex items-center justify-center shrink-0">
+                <Icon className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xl font-bold leading-none tabular-nums">{counts[tile.key]}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide mt-1 leading-tight">{tile.label}</p>
+                <p className="text-[9px] opacity-75 leading-tight mt-0.5">{tile.sub}</p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
