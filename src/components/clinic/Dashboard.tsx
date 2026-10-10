@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import DemoTriggers from './DemoTriggers';
 import {
-  IconAlert, IconCheck, IconChevronRight, IconClock, IconDollarSign,
+  IconAlert, IconBell, IconCheck, IconChevronRight, IconClock, IconDollarSign,
   IconExternalLink, IconMail, IconPackage, IconUsers,
 } from '../icons';
 import { useClinic, type SupplyOrder, type ResponseClass } from '../../context/ClinicContext';
@@ -55,10 +55,8 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
 
   const {
     orders, inventory, getStockStatus, isExpiringSoon, isExpired,
-    confirmReceived, suppliers, payments,
-    refundRequests, cancellationRequests,
+    confirmReceived, suppliers, payments, recallEntries,
     orderDispatchLog, overstockReviewNotes, inventoryAlertLog,
-    resolveOverstockNote,
   } = useClinic();
 
   // ── KPI aggregates ────────────────────────────────────────
@@ -73,16 +71,19 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
   const overdueAccounts = payments.filter(p => p.status !== 'paid' && p.amountDue > p.amountPaid);
   const overdueTotal = overdueAccounts.reduce((sum, p) => sum + (p.amountDue - p.amountPaid), 0);
 
+  // M21 §3 Input "Pending Recalls — Module 5". Both `due` and `overdue`
+  // entries are pending — the doctor hasn't resolved them yet. Split shown
+  // in the sub-line so an overdue count is visible without clicking.
+  const pendingRecalls = recallEntries.length;
+  const overdueRecalls = recallEntries.filter(r => r.status === 'overdue').length;
+  const dueRecalls = pendingRecalls - overdueRecalls;
+
   const getSupplierName = (id: string) => suppliers.find(s => s.id === id)?.name ?? id;
 
   // ── Exception queue ───────────────────────────────────────
-  // Aggregates every "needs your action" item across orders, stock, and
-  // supplier comms into a single prioritized list. This is the module's
-  // core intent per the process doc — surface only exceptions.
   const exceptions = useMemo<ExceptionItem[]>(() => {
     const items: ExceptionItem[] = [];
 
-    // 1. Unclear supplier replies — need classification.
     orders.filter(o => o.status === 'unclear').forEach(o => {
       items.push({
         id: `unclear-${o.id}`,
@@ -94,7 +95,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 2. Reroute chain exhausted — doctor must resolve manually.
     orders.filter(o => ['unavailable', 'no_response'].includes(o.status) && !o.linkedOrderId).forEach(o => {
       items.push({
         id: `escalation-${o.id}`,
@@ -106,9 +106,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 3. Email bounces — supplier email needs verification. The action
-    // points at the order's timeline where the bounce is logged; the fix
-    // surface belongs to the supplier record (Module 23, out of scope).
     orderDispatchLog.filter(l => l.deliveryStatus === 'bounced').forEach(l => {
       items.push({
         id: `bounce-${l.id}`,
@@ -120,8 +117,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 4. Reroute events — informational, but show the linked chain so the
-    //    doctor can trace what happened without opening the Orders view.
     orders.filter(o => o.status === 'rerouted' && o.linkedOrderId).forEach(o => {
       const child = orders.find(c => c.id === o.linkedOrderId);
       items.push({
@@ -134,7 +129,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 5. Being delivered — one-click confirm receipt.
     orders.filter(o => o.status === 'being_delivered').forEach(o => {
       items.push({
         id: `delivered-${o.id}`,
@@ -146,7 +140,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 6. Overstock review notes — need a doctor decision on threshold.
     overstockReviewNotes.filter(n => n.status === 'open').forEach(n => {
       items.push({
         id: `overstock-${n.id}`,
@@ -158,9 +151,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // 7. M18 §5 — Critical/Low stock alerts reach the dashboard. One entry
-    // per unacknowledged alert; the linked order's dispatch state is folded
-    // into the detail line so the doctor knows what the system already did.
     inventoryAlertLog
       .filter(a => !a.acknowledged && (a.severity === 'critical' || a.severity === 'low'))
       .forEach(a => {
@@ -182,9 +172,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
         });
       });
 
-    // 8. Expiring / expired batches — M19 §5. One entry per item so a single
-    // supply with three expiring batches doesn't flood the queue. Expired
-    // dominates when both states exist on the same item.
     inventory.forEach(item => {
       const expiredBatches = item.batches.filter(b => isExpired(b.expiry));
       const expiringBatches = item.batches.filter(b => isExpiringSoon(b.expiry));
@@ -212,7 +199,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
       });
     });
 
-    // Highest severity first, then stable by insertion order.
     return items.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
   }, [
     orders, orderDispatchLog, overstockReviewNotes, suppliers, confirmReceived, onNavigate,
@@ -221,10 +207,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
 
   return (
     <div className="p-6 space-y-4 max-w-7xl mx-auto">
-      {/* Header band — greeting + walk-in + inline KPI metrics.
-          Compression per M21 §13 #2 "one-screen visibility": merging the
-          greeting row and KPI row into a single band brings the exception
-          queue above the fold on a 1080p display. */}
+      {/* Header band — greeting + walk-in + inline KPI metrics. */}
       <div className="bg-white rounded-xl border border-clinical-200 p-5">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
@@ -241,7 +224,9 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
           </button>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-4 border-t border-clinical-100">
+        {/* 5 metrics: 3-per-row on medium, 5-per-row on large. Recalls tile
+            is the M21 §3 "Pending Recalls" input — previously absent. */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 pt-4 border-t border-clinical-100">
           <KpiMetric
             icon={<IconUsers className="w-3.5 h-3.5" />}
             label="Appointments"
@@ -267,6 +252,14 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
             onClick={() => onNavigate('inventory')}
           />
           <KpiMetric
+            icon={<IconBell className="w-3.5 h-3.5" />}
+            label="Recalls"
+            value={`${pendingRecalls}`}
+            sub={`${dueRecalls} due · ${overdueRecalls} overdue`}
+            tone={overdueRecalls > 0 ? 'warning' : undefined}
+            onClick={() => onNavigate('scheduling')}
+          />
+          <KpiMetric
             icon={<IconAlert className="w-3.5 h-3.5" />}
             label="Overdue"
             value={`₱${overdueTotal.toLocaleString()}`}
@@ -277,21 +270,10 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
         </div>
       </div>
 
-      {/* Exception Queue — hero position. The doc's core intent per §13 #5:
-          "Surface only exceptions as actionable items." Capped at 5 rows
-          with an inline expand toggle so the panel stays compact. */}
       <ExceptionQueue items={exceptions} />
 
-      {/* Supplier Response Status Board — M21 §13 #4. Live view of the four
-          possible reply states so the doctor doesn't have to open Orders to
-          know what's pending. */}
       <SupplierResponseBoard orders={orders} onNavigate={onNavigate} />
 
-      {/* Patient-facing context: schedule + medical alerts. Both panels are
-          secondary to the exception workflow and sit below it in the fold.
-          `items-start` prevents the shorter column (alerts) from being
-          stretched to match the taller one (schedule), which would leave
-          visible dead space inside its card. */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-start">
         <div className="xl:col-span-2 bg-white rounded-xl border border-clinical-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-clinical-100 flex items-center justify-between">
@@ -327,9 +309,6 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
           </div>
         </div>
 
-        {/* Medical Alerts — natural height, no artificial cap. Reviewed
-            alerts stay in the list with their timestamp so a critical
-            allergy can't be silently dismissed. */}
         <div className="bg-white rounded-xl border border-alert-100 overflow-hidden">
           <div className="px-4 py-3 bg-alert-50 border-b border-alert-100 flex items-center gap-2">
             <IconAlert className="w-4 h-4 text-alert-600" />
@@ -393,7 +372,7 @@ export default function Dashboard({ onNavigate, onOpenBilling, onViewPatient }: 
   );
 }
 
-// ── KPI metric (inline header strip) ──────────────────────────
+// ── KPI metric ────────────────────────────────────────────────
 
 function KpiMetric({
   icon, label, value, sub, bar, tone, onClick,
@@ -444,9 +423,6 @@ function KpiMetric({
 // ── Exception Queue ───────────────────────────────────────────
 
 const EXCEPTION_CAP = 5;
-// Rows that fit within the max-h-96 (~384px) expanded viewport at the
-// current row height. Used to gate the bottom fade so it only appears when
-// the list actually overflows.
 const EXCEPTION_VISIBLE_ROWS = 12;
 
 function ExceptionQueue({ items }: { items: ExceptionItem[] }) {
@@ -468,10 +444,6 @@ function ExceptionQueue({ items }: { items: ExceptionItem[] }) {
     );
   }
 
-  // Items arrive pre-sorted by severity (alert → warning → info), so a simple
-  // head-slice naturally keeps the most urgent in view. Cap at 5 by default —
-  // the queue is a triage surface, not a full log. Anything hidden is one
-  // click away.
   const visible = expanded ? items : items.slice(0, EXCEPTION_CAP);
   const hiddenCount = items.length - visible.length;
   const canScroll = expanded && visible.length > EXCEPTION_VISIBLE_ROWS;
@@ -512,10 +484,6 @@ function ExceptionQueue({ items }: { items: ExceptionItem[] }) {
             );
           })}
         </div>
-        {/* Fade at the bottom edge only when the expanded list actually
-            overflows the max-h-96 cap. Keeps the collapsed view unaltered
-            and doesn't show a misleading gradient when nothing is below the
-            fold. */}
         {canScroll && (
           <div
             aria-hidden="true"
@@ -544,9 +512,6 @@ function ExceptionQueue({ items }: { items: ExceptionItem[] }) {
 }
 
 // ── Supplier Response Status Board ────────────────────────────
-// M21 §13 #4: "Display supplier email response statuses ... prominently."
-// Four tiles — one per reply state defined in M22 §8. Clicking any tile
-// opens the Orders view where the doctor can act on individual orders.
 
 function SupplierResponseBoard({
   orders,

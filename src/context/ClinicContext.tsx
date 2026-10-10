@@ -190,6 +190,22 @@ export interface ExpenseRecord {
   createdAt: string;
 }
 
+// ── Recall entries (M5 cross-reference — feeds M21 §3 "Pending Recalls") ─
+// The M5 process documentation is not in scope for this pass; this shape is
+// the minimum surface M21 needs. Seeds mirror the 4 patients that already
+// exist in Scheduling.tsx's local RECALL_PATIENTS mock so the two views
+// agree visually until M5 is properly specified.
+export interface RecallEntry {
+  id: string;
+  patientId: string;
+  patientName: string;
+  lastTreatment: string;
+  lastVisit: string;
+  recommendedBy: string;
+  status: 'due' | 'overdue';
+  daysOverdue: number;
+}
+
 // ── M18 / M20 / M22 additions ─────────────────────────────
 
 export interface InventoryAlertLog {
@@ -332,26 +348,11 @@ const SEED_INVENTORY: InventoryItem[] = [
   { id: 'I08', name: 'Gloves (pair)', category: 'Consumables', unit: 'pair', unitCost: 8, supplierId: 'S03', backupSupplierIds: ['S05'], quantity: 150, everStocked: true, criticalThreshold: 20, reorderThreshold: 50, overstockThreshold: 300, batches: [{ batchNo: 'B2026-08A', qty: 150, expiry: addDays(today, 400) }] },
   { id: 'I09', name: 'Cotton Rolls', category: 'Consumables', unit: 'roll', unitCost: 3, supplierId: 'S01', backupSupplierIds: ['S05'], quantity: 20, everStocked: true, criticalThreshold: 10, reorderThreshold: 30, overstockThreshold: 150, batches: [{ batchNo: 'B2026-09A', qty: 20, expiry: addDays(today, 600) }] },
   { id: 'I10', name: 'Gauze Pads', category: 'Consumables', unit: 'pad', unitCost: 4, supplierId: 'S01', backupSupplierIds: ['S05'], quantity: 5, everStocked: true, criticalThreshold: 15, reorderThreshold: 40, overstockThreshold: 200, batches: [{ batchNo: 'B2026-10A', qty: 5, expiry: addDays(today, 550) }] },
-  // I11 — Overstock scenario: current qty above overstockMax, so M18 fires an
-  // overstock alert and suppresses ordering. Demonstrates the third severity.
   { id: 'I11', name: 'Disposable Bibs', category: 'Consumables', unit: 'piece', unitCost: 12, supplierId: 'S03', backupSupplierIds: ['S05'], quantity: 250, everStocked: true, criticalThreshold: 20, reorderThreshold: 100, overstockThreshold: 200, batches: [{ batchNo: 'B2026-11A', qty: 250, expiry: addDays(today, 900) }] },
-  // I12 — Expired batch scenario: qty is healthy, but one batch is past
-  // expiry. M18 does not fire (quantity is fine), but the Dashboard expiry
-  // block surfaces it directly, and the batch drawer offers discard.
   { id: 'I12', name: 'Fluoride Varnish', category: 'Preventive', unit: 'tube', unitCost: 180, supplierId: 'S04', backupSupplierIds: ['S06'], quantity: 8, everStocked: true, criticalThreshold: 3, reorderThreshold: 6, overstockThreshold: 30, batches: [{ batchNo: 'B2026-12A', qty: 2, expiry: subtractDays(today, 2) }, { batchNo: 'B2026-12B', qty: 6, expiry: addDays(today, 120) }] },
-  // I13 — Expiring-soon scenario: batch falls inside the 30-day window.
   { id: 'I13', name: 'Suture Material 3-0', category: 'Surgical', unit: 'vial', unitCost: 240, supplierId: 'S02', backupSupplierIds: ['S04'], quantity: 5, everStocked: true, criticalThreshold: 2, reorderThreshold: 4, overstockThreshold: 20, batches: [{ batchNo: 'B2026-13A', qty: 5, expiry: addDays(today, 20) }] },
-  // I14 — Feeds an auto-drafted being-delivered order so the exception queue
-  // shows the "Confirm Received" info state out of the box.
   { id: 'I14', name: 'Composite Resin B1', category: 'Restorative', unit: 'syringe', unitCost: 420, supplierId: 'S01', backupSupplierIds: ['S04'], quantity: 4, everStocked: true, criticalThreshold: 2, reorderThreshold: 5, overstockThreshold: 20, batches: [{ batchNo: 'B2026-14A', qty: 4, expiry: addDays(today, 150) }] },
-  // I15 — Multi-batch expiry risk: qty is healthy so M18 won't fire a
-  // stock alert, but the item carries one expired batch AND one expiring
-  // batch. Exercises the expiry-risk badge on the exception queue and the
-  // Tier 2 overstock × expiry interaction described in the audit notes.
   { id: 'I15', name: 'Orthodontic Wire 0.016"', category: 'Orthodontics', unit: 'spool', unitCost: 320, supplierId: 'S04', backupSupplierIds: ['S06'], quantity: 20, everStocked: true, criticalThreshold: 5, reorderThreshold: 10, overstockThreshold: 40, batches: [{ batchNo: 'B2026-15A', qty: 5, expiry: subtractDays(today, 5) }, { batchNo: 'B2026-15B', qty: 5, expiry: addDays(today, 18) }, { batchNo: 'B2026-15C', qty: 10, expiry: addDays(today, 210) }] },
-  // I16 — Pre-configured item with no stock yet. `everStocked: false` keeps
-  // the M18 watcher silent until the first delivery is registered. Add Item
-  // drawer → qty 0 produces exactly this shape.
   { id: 'I16', name: 'Zirconia Crown Blank', category: 'Prosthodontics', unit: 'blank', unitCost: 1800, supplierId: 'S04', backupSupplierIds: ['S06'], quantity: 0, everStocked: false, criticalThreshold: 2, reorderThreshold: 5, overstockThreshold: 15, batches: [] },
 ];
 
@@ -362,23 +363,12 @@ const SEED_ORDERS: SupplyOrder[] = [
   { id: 'ORD-004', poRef: 'PO-2026-043R1', itemId: 'I05', itemName: 'Dental Cement', qty: 6, stockAtDraft: 2, unit: 'pack', supplierId: 'S04', unitCost: 390, status: 'sent', originalOrderId: 'ORD-003', createdAt: subtractDays(today, 2), updatedAt: subtractDays(today, 2) },
   { id: 'ORD-005', poRef: 'PO-2026-044', itemId: 'I06', itemName: 'Rubber Dam (pack)', qty: 5, stockAtDraft: 1, unit: 'pack', supplierId: 'S03', unitCost: 290, status: 'queued', createdAt: subtractDays(today, 0), updatedAt: subtractDays(today, 0) },
   { id: 'ORD-006', poRef: 'PO-2026-040', itemId: 'I02', itemName: 'Composite Resin A3', qty: 8, stockAtDraft: 4, unit: 'syringe', supplierId: 'S01', unitCost: 420, status: 'completed', supplierResponse: 'Noted po. Will deliver tomorrow.', responseClass: 'confirmed', createdAt: subtractDays(today, 7), updatedAt: subtractDays(today, 5), confirmedAt: subtractDays(today, 6), receivedAt: subtractDays(today, 5) },
-  // ORD-007 — second being-delivered order so the doctor sees two
-  // "Confirm Received" entries in the queue out of the box.
   { id: 'ORD-007', poRef: 'PO-2026-045', itemId: 'I14', itemName: 'Composite Resin B1', qty: 8, stockAtDraft: 4, unit: 'syringe', supplierId: 'S01', unitCost: 420, status: 'being_delivered', supplierResponse: 'Confirmed — shipping today.', responseClass: 'confirmed', createdAt: subtractDays(today, 1), updatedAt: subtractDays(today, 0), confirmedAt: subtractDays(today, 0) },
-  // ORD-008 → ORD-009 — a rerouted pair. The parent shows up in the
-  // Dashboard exception queue (info severity) so the doctor can trace the
-  // chain without opening Orders.
   { id: 'ORD-008', poRef: 'PO-2026-046', itemId: 'I12', itemName: 'Fluoride Varnish', qty: 10, stockAtDraft: 3, unit: 'tube', supplierId: 'S04', unitCost: 180, status: 'rerouted', supplierResponse: 'Out of stock. Cannot fulfill.', responseClass: 'unavailable', linkedOrderId: 'ORD-009', createdAt: subtractDays(today, 4), updatedAt: subtractDays(today, 3) },
   { id: 'ORD-009', poRef: 'PO-2026-046R1', itemId: 'I12', itemName: 'Fluoride Varnish', qty: 10, stockAtDraft: 3, unit: 'tube', supplierId: 'S06', unitCost: 185, status: 'sent', originalOrderId: 'ORD-008', createdAt: subtractDays(today, 3), updatedAt: subtractDays(today, 3) },
-  // ORD-010 — a completed order for a third item, so Completed history in
-  // Order Monitoring has more than one entry.
   { id: 'ORD-010', poRef: 'PO-2026-038', itemId: 'I07', itemName: 'Matrix Band', qty: 12, stockAtDraft: 8, unit: 'pack', supplierId: 'S03', unitCost: 155, status: 'completed', supplierResponse: 'Confirmed. Dispatching now.', responseClass: 'confirmed', createdAt: subtractDays(today, 12), updatedAt: subtractDays(today, 10), confirmedAt: subtractDays(today, 11), receivedAt: subtractDays(today, 10) },
-  // ORD-011 — dead end: primary + both backups tried, all unreachable. Shows
-  // up on the Dashboard as an escalation (alert severity).
   { id: 'ORD-011', poRef: 'PO-2026-047', itemId: 'I15', itemName: 'Orthodontic Wire 0.016"', qty: 8, stockAtDraft: 4, unit: 'spool', supplierId: 'S06', unitCost: 320, status: 'no_response', responseClass: 'no_response', createdAt: subtractDays(today, 5), updatedAt: subtractDays(today, 3) },
-  // ORD-012 — manually cancelled by the doctor after review.
   { id: 'ORD-012', poRef: 'PO-2026-048', itemId: 'I10', itemName: 'Gauze Pads', qty: 60, stockAtDraft: 5, unit: 'pad', supplierId: 'S01', unitCost: 4, status: 'cancelled', supplierResponse: 'Unavailable — supplier confirms discontinuation.', responseClass: 'unavailable', createdAt: subtractDays(today, 9), updatedAt: subtractDays(today, 8) },
-  // ORD-013 — fresh dispatch awaiting supplier reply.
   { id: 'ORD-013', poRef: 'PO-2026-049', itemId: 'I09', itemName: 'Cotton Rolls', qty: 40, stockAtDraft: 20, unit: 'roll', supplierId: 'S01', unitCost: 3, status: 'sent', createdAt: subtractDays(today, 0), updatedAt: subtractDays(today, 0) },
 ];
 
@@ -506,8 +496,6 @@ const SEED_ORDER_TIMELINE: OrderTimelineEvent[] = [
     kind: 'received', actor: 'doctor', title: 'Physical receipt confirmed',
     detail: '12 units added to inventory. Order completed.' },
 
-  // ORD-011 — dead-end escalation. Rerouted twice, both backups tried,
-  // chain exhausted → escalated to doctor.
   { id: 'TL-011-a', orderId: 'ORD-011', ts: msAgo(5, 4), timestamp: fmtTs(msAgo(5, 4)),
     kind: 'created', actor: 'system', title: 'Auto-drafted low order',
     detail: 'Stock at 4 spool (threshold 10). Drafted PO for 8 spool.' },
@@ -521,7 +509,6 @@ const SEED_ORDER_TIMELINE: OrderTimelineEvent[] = [
     kind: 'escalated', actor: 'system', title: 'Reroute chain exhausted',
     detail: 'All supplier routes tried. Requires doctor attention.' },
 
-  // ORD-012 — manually cancelled by doctor.
   { id: 'TL-012-a', orderId: 'ORD-012', ts: msAgo(9, 3), timestamp: fmtTs(msAgo(9, 3)),
     kind: 'created', actor: 'system', title: 'Auto-drafted critical order',
     detail: 'Stock at 5 pad (threshold 15). Drafted PO for 60 pad.' },
@@ -536,7 +523,6 @@ const SEED_ORDER_TIMELINE: OrderTimelineEvent[] = [
     kind: 'cancelled', actor: 'doctor', title: 'Order cancelled by doctor',
     detail: 'PO-2026-048 closed as cancelled after manual review.' },
 
-  // ORD-013 — fresh dispatch awaiting supplier reply.
   { id: 'TL-013-a', orderId: 'ORD-013', ts: msAgo(0, 6), timestamp: fmtTs(msAgo(0, 6)),
     kind: 'created', actor: 'system', title: 'Auto-drafted low order',
     detail: 'Stock at 20 roll (threshold 30). Drafted PO for 40 roll.' },
@@ -584,11 +570,8 @@ const SEED_PAYMENTS: PaymentTransaction[] = [
   { id: 'pay-5', reference: 'TXN-20260923-005', patient: 'Lorna dela Cruz', patientId: 'P-0743', appointmentId: 'APT-0923-05', service: 'Dental Consultation', amountDue: 500, amountPaid: 0, method: 'GCash', status: 'failed', createdAt: '2026-09-23 16:20' },
   { id: 'pay-6', reference: 'TXN-20260920-006', patient: 'Ben Santos', patientId: 'P-0400', appointmentId: 'APT-0920-06', service: 'PFM Crown', amountDue: 15000, amountPaid: 16500, method: 'Cash', status: 'paid', createdAt: '2026-09-20 12:10', paymentDate: '2026-09-20', receiptRef: 'RCT-20260920-006' },
   { id: 'pay-7', reference: 'TXN-20260926-007', patient: 'Maria Corazon Santos', patientId: 'P-0891', appointmentId: 'APT-0927-07', service: 'Fluoride Treatment', amountDue: 500, amountPaid: 500, method: 'GCash', status: 'paid', createdAt: '2026-09-26 10:05', paymentDate: '2026-09-26', receiptRef: 'RCT-20260926-007' },
-  // Bank transfer awaiting staff verification.
   { id: 'pay-8', reference: 'TXN-20260926-008', patient: 'Ana Kristina Reyes', patientId: 'P-1042', appointmentId: 'APT-0928-08', service: 'Composite Restoration', amountDue: 2500, amountPaid: 0, method: 'Bank Transfer', status: 'for_verification', createdAt: '2026-09-26 11:30', proofFile: 'bdo_transfer_0926.jpg' },
-  // Refunded payment — original completed, then refunded through the Billing module.
   { id: 'pay-9', reference: 'TXN-20260815-009', patient: 'Eduardo Bautista', patientId: 'P-1666', appointmentId: 'APT-0815-09', service: 'Surgical Extraction', amountDue: 4500, amountPaid: 4500, method: 'GCash', status: 'paid', createdAt: '2026-08-15 14:00', paymentDate: '2026-08-15', receiptRef: 'RCT-20260815-009' },
-  // Another Maya failure so retries demonstrate both providers.
   { id: 'pay-10', reference: 'TXN-20260926-010', patient: 'Ramon Aurelio Cruz', patientId: 'P-1156', appointmentId: 'APT-0927-10', service: 'Dental Consultation', amountDue: 500, amountPaid: 0, method: 'Maya', status: 'failed', createdAt: '2026-09-26 15:45' },
 ];
 
@@ -615,21 +598,15 @@ const SEED_FINANCIAL_AUDIT: FinancialAuditEvent[] = [
 const SEED_CANCELLATIONS: CancellationRequest[] = [
   { id: 'CAN-001', patient: 'Ana Kristina Reyes', patientId: 'P-1042', appointmentId: 'APT-0928-08', service: 'Composite Restoration', appointmentDate: '2026-09-28', appointmentTime: '10:00', reason: 'Schedule conflict', paymentReference: 'TXN-20260910-001', paymentStatus: 'paid', status: 'pending' },
   { id: 'CAN-002', patient: 'Jose dela Cruz', patientId: 'P-2001', appointmentId: 'APT-0929-09', service: 'Dental Consultation', appointmentDate: '2026-09-29', appointmentTime: '14:30', reason: 'Unable to attend', paymentStatus: 'pending', status: 'pending' },
-  // Cancellation approved → refund request was auto-created (see REF-002).
   { id: 'CAN-003', patient: 'Eduardo Bautista', patientId: 'P-1666', appointmentId: 'APT-0816-10', service: 'Surgical Extraction', appointmentDate: '2026-08-16', appointmentTime: '09:00', reason: 'Patient hospitalized', paymentReference: 'TXN-20260815-009', paymentStatus: 'paid', status: 'approved' },
-  // Cancellation rejected — non-refundable per policy.
   { id: 'CAN-004', patient: 'Lorna dela Cruz', patientId: 'P-0743', appointmentId: 'APT-0925-11', service: 'Root Canal Treatment', appointmentDate: '2026-09-25', appointmentTime: '10:30', reason: 'Changed mind', paymentStatus: 'pending', status: 'rejected', rejectionReason: 'Cancellation requested within 24 hours — deposit is non-refundable per clinic policy.' },
-  // Second pending cancellation for variety.
   { id: 'CAN-005', patient: 'Maria Corazon Santos', patientId: 'P-0891', appointmentId: 'APT-0930-12', service: 'Fluoride Treatment', appointmentDate: '2026-09-30', appointmentTime: '11:00', reason: 'Travel plans', paymentReference: 'TXN-20260926-007', paymentStatus: 'paid', status: 'pending' },
 ];
 
 const SEED_REFUNDS: RefundRequest[] = [
   { id: 'REF-001', patient: 'Ana Kristina Reyes', patientId: 'P-1042', transactionRef: 'TXN-20260910-001', service: 'Composite Restoration', amountPaid: 2500, requestedAmount: 500, method: 'GCash', paymentDate: '2026-09-10', reason: 'Partial service cancellation', supportingDocument: 'refund_request_ana.pdf', status: 'pending' },
-  // Full refund of a cancelled surgical extraction — completed flow with a refund reference.
   { id: 'REF-002', patient: 'Eduardo Bautista', patientId: 'P-1666', transactionRef: 'TXN-20260815-009', service: 'Surgical Extraction', amountPaid: 4500, requestedAmount: 4500, method: 'GCash', paymentDate: '2026-08-15', reason: 'Approved cancellation CAN-003', status: 'refunded', refundReference: 'RFN-20260820-002' },
-  // Rejected refund — different reason path.
   { id: 'REF-003', patient: 'Lorna dela Cruz', patientId: 'P-0743', transactionRef: 'TXN-20260923-005', service: 'Dental Consultation', amountPaid: 500, requestedAmount: 500, method: 'GCash', paymentDate: '2026-09-23', reason: 'Requested refund after failed payment', status: 'rejected', rejectionReason: 'Payment never completed — no funds captured. Request void.' },
-  // Awaiting cash pickup — refund approved for a cash payment, staff must hand the money over.
   { id: 'REF-004', patient: 'Maria Corazon Santos', patientId: 'P-0891', transactionRef: 'TXN-20260926-007', service: 'Fluoride Treatment', amountPaid: 500, requestedAmount: 500, method: 'Cash', paymentDate: '2026-09-26', reason: 'Cancelled CAN-005 — awaiting patient pickup', status: 'awaiting_cash' },
 ];
 
@@ -640,6 +617,16 @@ const SEED_EXPENSES: ExpenseRecord[] = [
   { id: 'EXP-20260924-004', merchant: 'Clinic Operations', category: 'Other', description: 'Clinic rent and other operating costs', amount: 5500, date: '2026-09-24', createdBy: 'Carlo Bautista', createdAt: '2026-09-24 08:40' },
   { id: 'EXP-20260902-005', merchant: 'UniMed Supplies', category: 'Supplies', description: 'Gloves, cotton rolls, and gauze pads', amount: 1850, date: '2026-09-02', receiptNumber: 'OR-88112', receiptFile: 'unimed_sep.jpg', createdBy: 'Carlo Bautista', createdAt: '2026-09-02 11:20' },
   { id: 'EXP-20260915-006', merchant: 'Brightline Maintenance', category: 'Maintenance', description: 'Monthly autoclave servicing and parts', amount: 1200, date: '2026-09-15', receiptNumber: 'BL-2026-0915', createdBy: 'Carlo Bautista', createdAt: '2026-09-15 15:00' },
+];
+
+// M5 cross-reference — these four entries mirror the RECALL_PATIENTS constant
+// in Scheduling.tsx so the Dashboard count and the Scheduling view agree.
+// If Scheduling's mock is edited without editing this, they will diverge.
+const SEED_RECALLS: RecallEntry[] = [
+  { id: 'R-001', patientId: 'P-0400', patientName: 'Santos, Benedicto R.', lastTreatment: 'Dental Prophylaxis', lastVisit: '2026-03-15', recommendedBy: '2026-09-15', status: 'due', daysOverdue: 9 },
+  { id: 'R-002', patientId: 'P-0612', patientName: 'Villanueva, Celestine M.', lastTreatment: 'Composite Restoration', lastVisit: '2026-01-10', recommendedBy: '2026-07-10', status: 'overdue', daysOverdue: 76 },
+  { id: 'R-003', patientId: 'P-0289', patientName: 'Navarro, Eduardo F.', lastTreatment: 'Root Canal Treatment', lastVisit: '2025-11-20', recommendedBy: '2026-05-20', status: 'overdue', daysOverdue: 127 },
+  { id: 'R-004', patientId: 'P-0544', patientName: 'Mercado, Florentina J.', lastTreatment: 'Dental Examination', lastVisit: '2026-04-05', recommendedBy: '2026-10-05', status: 'due', daysOverdue: 0 },
 ];
 
 // ── Context ────────────────────────────────────────────────────
@@ -688,6 +675,9 @@ interface ClinicContextValue {
   fireDemoTrigger: (trigger: DemoTrigger) => void;
   saveInventoryItem: (item: InventoryItem) => void;
   discardBatch: (itemId: string, batchNo: string) => void;
+  // M5 cross-reference — feeds M21 §3 "Pending Recalls". Read-only for now;
+  // mutators arrive with a proper M5 pass.
+  recallEntries: RecallEntry[];
 }
 
 const ClinicContext = createContext<ClinicContextValue | null>(null);
@@ -704,6 +694,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
   const [orders, setOrders] = useState<SupplyOrder[]>(SEED_ORDERS);
   const [suppliers] = useState<Supplier[]>(SEED_SUPPLIERS);
   const [expiryAlertDays, setExpiryAlertDays] = useState(30);
+  const [recallEntries] = useState<RecallEntry[]>(SEED_RECALLS);
 
   const [inventoryAlertLog, setInventoryAlertLog] = useState<InventoryAlertLog[]>([]);
   const [inventoryAuditLog, setInventoryAuditLog] = useState<InventoryAuditEntry[]>([]);
@@ -1453,15 +1444,11 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     const currentOrders = ordersRef.current;
 
     inventory.forEach(item => {
-      // Skip pre-configured records that have never carried stock. Otherwise
-      // the watcher would fire a phantom critical alert + auto-PO for items
-      // the clinic hasn't physically received yet.
       if (!item.everStocked) return;
 
       const status = getStockStatus(item);
       const activeAlert = currentAlerts.find(a => a.itemId === item.id && !a.acknowledged);
 
-      // Auto-resolve any open alert once stock returns to normal.
       if (status === 'ok') {
         if (activeAlert) resolvedAlertIds.push(activeAlert.id);
         return;
@@ -1469,18 +1456,13 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
 
       const severity: 'critical' | 'low' | 'overstock' = status;
 
-      // Skip if an equal-or-higher severity alert is already open for this item.
       if (activeAlert && SEVERITY_RANK[activeAlert.severity] >= SEVERITY_RANK[severity]) return;
 
-      // Skip if a replenishment order is already in flight (except overstock,
-      // which suppresses ordering rather than triggering it).
       const hasOpenOrder = currentOrders.some(o =>
         o.itemId === item.id && !['completed', 'cancelled'].includes(o.status)
       );
       if (severity !== 'overstock' && hasOpenOrder) return;
 
-      // If we reach this point and a lower-severity alert was open, it will
-      // be superseded by the higher-severity one we're about to fire.
       if (activeAlert) supersededAlertIds.push(activeAlert.id);
 
       const threshold = severity === 'critical' ? item.criticalThreshold
@@ -1590,7 +1572,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    // Log auto-resolutions (stock back to normal, superseded by higher severity).
     [...resolvedAlertIds, ...supersededAlertIds].forEach(alertId => {
       const a = currentAlerts.find(x => x.id === alertId);
       if (!a) return;
@@ -1632,8 +1613,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventory]);
 
-  // M20 — dispatch scheduler. Queued orders dispatch at end of day, or
-  // immediately for critical items if `criticalImmediate` is enabled.
+  // M20 — dispatch scheduler
   useEffect(() => {
     const queued = orders.filter(o => o.status === 'queued');
     if (queued.length === 0) return;
@@ -1659,8 +1639,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orders, inventory, automationConfig, tick]);
 
-  // M22 — response-window timeout. Sent orders past their supplier's window
-  // are force-timed-out, which triggers reroute per the doc's flow.
+  // M22 — response-window timeout
   useEffect(() => {
     const nowMs = Date.now();
     const timedOut: string[] = [];
@@ -1725,6 +1704,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     fireDemoTrigger,
     saveInventoryItem,
     discardBatch,
+    recallEntries,
   };
 
   return <ClinicContext.Provider value={value}>{children}</ClinicContext.Provider>;
