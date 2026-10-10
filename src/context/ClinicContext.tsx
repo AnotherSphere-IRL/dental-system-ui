@@ -312,7 +312,7 @@ const SEED_SUPPLIERS: Supplier[] = [
   { id: 'S01', name: 'GC Dental Supply Co.', contactPerson: 'Maria Santos', phone: '+63 917 555 0101', email: 'orders@gcdental.ph', address: '14 Dental Ave, Makati City', products: ['I01','I02','I03','I09','I10','I14'], leadTimeDays: 2, responseWindowHours: 24, paymentTerms: 'Net 30', status: 'active', responseRate: 92, avgResponseTimeHrs: 8, rerouteFrequency: 1 },
   { id: 'S02', name: 'MedDent Philippines', contactPerson: 'Juan Cruz', phone: '+63 918 555 0202', email: 'supply@meddent.ph', address: '7 Medic Blvd, Quezon City', products: ['I04','I05','I13'], leadTimeDays: 3, responseWindowHours: 24, paymentTerms: 'Net 15', status: 'active', responseRate: 88, avgResponseTimeHrs: 12, rerouteFrequency: 2 },
   { id: 'S03', name: 'UniMed Supplies', contactPerson: 'Rosa Dela Torre', phone: '+63 916 555 0303', email: 'info@unimed.ph', address: '22 Health Plaza, Pasig City', products: ['I06','I07','I08','I11'], leadTimeDays: 1, responseWindowHours: 12, paymentTerms: 'COD', status: 'active', responseRate: 97, avgResponseTimeHrs: 5, rerouteFrequency: 0 },
-  { id: 'S04', name: 'DentaCore Backup PH', contactPerson: 'Leo Bautista', phone: '+63 919 555 0404', email: 'backup@dentacore.ph', address: '5 Supply St, Taguig City', products: ['I01','I02','I03','I04','I05','I12'], leadTimeDays: 3, responseWindowHours: 24, paymentTerms: 'Net 30', status: 'backup', responseRate: 85, avgResponseTimeHrs: 18, rerouteFrequency: 0 },
+  { id: 'S04', name: 'DentaCore Backup PH', contactPerson: 'Leo Bautista', phone: '+63 919 555 0404', email: 'backup@dentacore.ph', address: '5 Supply St, Taguig City', products: ['I01','I02','I03','I04','I05','I12','I15','I16'], leadTimeDays: 3, responseWindowHours: 24, paymentTerms: 'Net 30', status: 'backup', responseRate: 85, avgResponseTimeHrs: 18, rerouteFrequency: 0 },
   { id: 'S05', name: 'ProDental Warehouse', contactPerson: 'Claire Sy', phone: '+63 920 555 0505', email: 'orders@prodental.ph', address: '100 Commerce Rd, Mandaluyong', products: ['I06','I07','I08','I09','I10','I11'], leadTimeDays: 2, responseWindowHours: 12, paymentTerms: 'Net 15', status: 'backup', responseRate: 90, avgResponseTimeHrs: 10, rerouteFrequency: 0 },
   { id: 'S06', name: 'Pacific Dental Traders', contactPerson: 'Hector Villamor', phone: '+63 921 555 0606', email: 'sales@pacificdental.ph', address: '9 Trade Center, Pasay City', products: ['I12'], leadTimeDays: 4, responseWindowHours: 24, paymentTerms: 'Net 30', status: 'backup', responseRate: 82, avgResponseTimeHrs: 20, rerouteFrequency: 0 },
 ];
@@ -344,6 +344,15 @@ const SEED_INVENTORY: InventoryItem[] = [
   // I14 — Feeds an auto-drafted being-delivered order so the exception queue
   // shows the "Confirm Received" info state out of the box.
   { id: 'I14', name: 'Composite Resin B1', category: 'Restorative', unit: 'syringe', unitCost: 420, supplierId: 'S01', backupSupplierIds: ['S04'], quantity: 4, everStocked: true, criticalThreshold: 2, reorderThreshold: 5, overstockThreshold: 20, batches: [{ batchNo: 'B2026-14A', qty: 4, expiry: addDays(today, 150) }] },
+  // I15 — Multi-batch expiry risk: qty is healthy so M18 won't fire a
+  // stock alert, but the item carries one expired batch AND one expiring
+  // batch. Exercises the expiry-risk badge on the exception queue and the
+  // Tier 2 overstock × expiry interaction described in the audit notes.
+  { id: 'I15', name: 'Orthodontic Wire 0.016"', category: 'Orthodontics', unit: 'spool', unitCost: 320, supplierId: 'S04', backupSupplierIds: ['S06'], quantity: 20, everStocked: true, criticalThreshold: 5, reorderThreshold: 10, overstockThreshold: 40, batches: [{ batchNo: 'B2026-15A', qty: 5, expiry: subtractDays(today, 5) }, { batchNo: 'B2026-15B', qty: 5, expiry: addDays(today, 18) }, { batchNo: 'B2026-15C', qty: 10, expiry: addDays(today, 210) }] },
+  // I16 — Pre-configured item with no stock yet. `everStocked: false` keeps
+  // the M18 watcher silent until the first delivery is registered. Add Item
+  // drawer → qty 0 produces exactly this shape.
+  { id: 'I16', name: 'Zirconia Crown Blank', category: 'Prosthodontics', unit: 'blank', unitCost: 1800, supplierId: 'S04', backupSupplierIds: ['S06'], quantity: 0, everStocked: false, criticalThreshold: 2, reorderThreshold: 5, overstockThreshold: 15, batches: [] },
 ];
 
 const SEED_ORDERS: SupplyOrder[] = [
@@ -364,6 +373,13 @@ const SEED_ORDERS: SupplyOrder[] = [
   // ORD-010 — a completed order for a third item, so Completed history in
   // Order Monitoring has more than one entry.
   { id: 'ORD-010', poRef: 'PO-2026-038', itemId: 'I07', itemName: 'Matrix Band', qty: 12, stockAtDraft: 8, unit: 'pack', supplierId: 'S03', unitCost: 155, status: 'completed', supplierResponse: 'Confirmed. Dispatching now.', responseClass: 'confirmed', createdAt: subtractDays(today, 12), updatedAt: subtractDays(today, 10), confirmedAt: subtractDays(today, 11), receivedAt: subtractDays(today, 10) },
+  // ORD-011 — dead end: primary + both backups tried, all unreachable. Shows
+  // up on the Dashboard as an escalation (alert severity).
+  { id: 'ORD-011', poRef: 'PO-2026-047', itemId: 'I15', itemName: 'Orthodontic Wire 0.016"', qty: 8, stockAtDraft: 4, unit: 'spool', supplierId: 'S06', unitCost: 320, status: 'no_response', responseClass: 'no_response', createdAt: subtractDays(today, 5), updatedAt: subtractDays(today, 3) },
+  // ORD-012 — manually cancelled by the doctor after review.
+  { id: 'ORD-012', poRef: 'PO-2026-048', itemId: 'I10', itemName: 'Gauze Pads', qty: 60, stockAtDraft: 5, unit: 'pad', supplierId: 'S01', unitCost: 4, status: 'cancelled', supplierResponse: 'Unavailable — supplier confirms discontinuation.', responseClass: 'unavailable', createdAt: subtractDays(today, 9), updatedAt: subtractDays(today, 8) },
+  // ORD-013 — fresh dispatch awaiting supplier reply.
+  { id: 'ORD-013', poRef: 'PO-2026-049', itemId: 'I09', itemName: 'Cotton Rolls', qty: 40, stockAtDraft: 20, unit: 'roll', supplierId: 'S01', unitCost: 3, status: 'sent', createdAt: subtractDays(today, 0), updatedAt: subtractDays(today, 0) },
 ];
 
 const msAgo = (days: number, hours = 0) => Date.now() - days * 86400000 - hours * 3600000;
@@ -489,6 +505,44 @@ const SEED_ORDER_TIMELINE: OrderTimelineEvent[] = [
   { id: 'TL-010-e', orderId: 'ORD-010', ts: msAgo(10, 3), timestamp: fmtTs(msAgo(10, 3)),
     kind: 'received', actor: 'doctor', title: 'Physical receipt confirmed',
     detail: '12 units added to inventory. Order completed.' },
+
+  // ORD-011 — dead-end escalation. Rerouted twice, both backups tried,
+  // chain exhausted → escalated to doctor.
+  { id: 'TL-011-a', orderId: 'ORD-011', ts: msAgo(5, 4), timestamp: fmtTs(msAgo(5, 4)),
+    kind: 'created', actor: 'system', title: 'Auto-drafted low order',
+    detail: 'Stock at 4 spool (threshold 10). Drafted PO for 8 spool.' },
+  { id: 'TL-011-b', orderId: 'ORD-011', ts: msAgo(5, 3), timestamp: fmtTs(msAgo(5, 3)),
+    kind: 'dispatched', actor: 'system', title: 'PO dispatched via SMTP email (simulated)',
+    detail: 'PDF PO emailed to Pacific Dental Traders (sales@pacificdental.ph). Awaiting response.' },
+  { id: 'TL-011-c', orderId: 'ORD-011', ts: msAgo(4, 8), timestamp: fmtTs(msAgo(4, 8)),
+    kind: 'rerouted', actor: 'system', title: 'Rerouted to backup supplier',
+    detail: 'No response from primary — auto-rerouted to DentaCore Backup PH.' },
+  { id: 'TL-011-d', orderId: 'ORD-011', ts: msAgo(3, 2), timestamp: fmtTs(msAgo(3, 2)),
+    kind: 'escalated', actor: 'system', title: 'Reroute chain exhausted',
+    detail: 'All supplier routes tried. Requires doctor attention.' },
+
+  // ORD-012 — manually cancelled by doctor.
+  { id: 'TL-012-a', orderId: 'ORD-012', ts: msAgo(9, 3), timestamp: fmtTs(msAgo(9, 3)),
+    kind: 'created', actor: 'system', title: 'Auto-drafted critical order',
+    detail: 'Stock at 5 pad (threshold 15). Drafted PO for 60 pad.' },
+  { id: 'TL-012-b', orderId: 'ORD-012', ts: msAgo(9, 2), timestamp: fmtTs(msAgo(9, 2)),
+    kind: 'dispatched', actor: 'system', title: 'PO dispatched via SMTP email (simulated)',
+    detail: 'PDF PO emailed to GC Dental Supply Co. (orders@gcdental.ph). Awaiting response.' },
+  { id: 'TL-012-c', orderId: 'ORD-012', ts: msAgo(8, 5), timestamp: fmtTs(msAgo(8, 5)),
+    kind: 'reply-parsed', actor: 'supplier', title: 'System parsed email (Keyword Match - unavailable)',
+    detail: 'Matched keyword in supplier reply from GC Dental Supply Co.',
+    emailSnippet: { sender: 'orders@gcdental.ph', before: 'Unavailable — supplier confirms ', keyword: 'discontinuation', after: '.' } },
+  { id: 'TL-012-d', orderId: 'ORD-012', ts: msAgo(8, 3), timestamp: fmtTs(msAgo(8, 3)),
+    kind: 'cancelled', actor: 'doctor', title: 'Order cancelled by doctor',
+    detail: 'PO-2026-048 closed as cancelled after manual review.' },
+
+  // ORD-013 — fresh dispatch awaiting supplier reply.
+  { id: 'TL-013-a', orderId: 'ORD-013', ts: msAgo(0, 6), timestamp: fmtTs(msAgo(0, 6)),
+    kind: 'created', actor: 'system', title: 'Auto-drafted low order',
+    detail: 'Stock at 20 roll (threshold 30). Drafted PO for 40 roll.' },
+  { id: 'TL-013-b', orderId: 'ORD-013', ts: msAgo(0, 5), timestamp: fmtTs(msAgo(0, 5)),
+    kind: 'dispatched', actor: 'system', title: 'PO dispatched via SMTP email (simulated)',
+    detail: 'PDF PO emailed to GC Dental Supply Co. (orders@gcdental.ph). Awaiting response.' },
 ];
 
 const SEED_DEDUCTIONS: DeductionEntry[] = [
@@ -516,6 +570,10 @@ const SEED_DEDUCTIONS: DeductionEntry[] = [
   { id: 'D022', itemId: 'I04', itemName: 'Anesthetic Carpule 2%', qty: 1, patientId: 'P-2045', procedure: 'Simple Extraction', performedBy: 'Dr. Santos', date: subtractDays(today, 8) },
   { id: 'D023', itemId: 'I09', itemName: 'Cotton Rolls', qty: 3, patientId: 'P-2109', procedure: 'Composite Restoration', performedBy: 'Dr. Reyes', date: subtractDays(today, 11) },
   { id: 'D024', itemId: 'I08', itemName: 'Gloves (pair)', qty: 2, patientId: 'P-2109', procedure: 'Composite Restoration', performedBy: 'Dr. Reyes', date: subtractDays(today, 11) },
+  { id: 'D025', itemId: 'I15', itemName: 'Orthodontic Wire 0.016"', qty: 2, patientId: 'P-2140', procedure: 'Orthodontic Adjustment', performedBy: 'Dr. Santos', date: subtractDays(today, 4) },
+  { id: 'D026', itemId: 'I02', itemName: 'Composite Resin A3', qty: 1, patientId: 'P-2188', procedure: 'Composite Restoration', performedBy: 'Dr. Reyes', date: subtractDays(today, 8) },
+  { id: 'D027', itemId: 'I01', itemName: 'Composite Resin A2', qty: 2, patientId: 'P-1932', procedure: 'Anterior Restoration', performedBy: 'Dr. Santos', date: subtractDays(today, 12) },
+  { id: 'D028', itemId: 'I07', itemName: 'Matrix Band', qty: 2, patientId: 'P-1677', procedure: 'Posterior Restoration', performedBy: 'Dr. Reyes', date: subtractDays(today, 15) },
 ];
 
 const SEED_PAYMENTS: PaymentTransaction[] = [
@@ -526,6 +584,12 @@ const SEED_PAYMENTS: PaymentTransaction[] = [
   { id: 'pay-5', reference: 'TXN-20260923-005', patient: 'Lorna dela Cruz', patientId: 'P-0743', appointmentId: 'APT-0923-05', service: 'Dental Consultation', amountDue: 500, amountPaid: 0, method: 'GCash', status: 'failed', createdAt: '2026-09-23 16:20' },
   { id: 'pay-6', reference: 'TXN-20260920-006', patient: 'Ben Santos', patientId: 'P-0400', appointmentId: 'APT-0920-06', service: 'PFM Crown', amountDue: 15000, amountPaid: 16500, method: 'Cash', status: 'paid', createdAt: '2026-09-20 12:10', paymentDate: '2026-09-20', receiptRef: 'RCT-20260920-006' },
   { id: 'pay-7', reference: 'TXN-20260926-007', patient: 'Maria Corazon Santos', patientId: 'P-0891', appointmentId: 'APT-0927-07', service: 'Fluoride Treatment', amountDue: 500, amountPaid: 500, method: 'GCash', status: 'paid', createdAt: '2026-09-26 10:05', paymentDate: '2026-09-26', receiptRef: 'RCT-20260926-007' },
+  // Bank transfer awaiting staff verification.
+  { id: 'pay-8', reference: 'TXN-20260926-008', patient: 'Ana Kristina Reyes', patientId: 'P-1042', appointmentId: 'APT-0928-08', service: 'Composite Restoration', amountDue: 2500, amountPaid: 0, method: 'Bank Transfer', status: 'for_verification', createdAt: '2026-09-26 11:30', proofFile: 'bdo_transfer_0926.jpg' },
+  // Refunded payment — original completed, then refunded through the Billing module.
+  { id: 'pay-9', reference: 'TXN-20260815-009', patient: 'Eduardo Bautista', patientId: 'P-1666', appointmentId: 'APT-0815-09', service: 'Surgical Extraction', amountDue: 4500, amountPaid: 4500, method: 'GCash', status: 'paid', createdAt: '2026-08-15 14:00', paymentDate: '2026-08-15', receiptRef: 'RCT-20260815-009' },
+  // Another Maya failure so retries demonstrate both providers.
+  { id: 'pay-10', reference: 'TXN-20260926-010', patient: 'Ramon Aurelio Cruz', patientId: 'P-1156', appointmentId: 'APT-0927-10', service: 'Dental Consultation', amountDue: 500, amountPaid: 0, method: 'Maya', status: 'failed', createdAt: '2026-09-26 15:45' },
 ];
 
 const SEED_FINANCIAL_AUDIT: FinancialAuditEvent[] = [
@@ -539,15 +603,34 @@ const SEED_FINANCIAL_AUDIT: FinancialAuditEvent[] = [
   { id: 'fa-8', timestamp: '2026-09-24 07:40', actor: 'Patient', action: 'Cancellation Requested', reference: 'CAN-001', amount: 0 },
   { id: 'fa-9', timestamp: '2026-09-26 10:06', actor: 'System', action: 'Online Payment Confirmed', reference: 'TXN-20260926-007', amount: 500 },
   { id: 'fa-10', timestamp: '2026-09-26 10:06', actor: 'System', action: 'Receipt Generated', reference: 'TXN-20260926-007', amount: 500 },
+  { id: 'fa-11', timestamp: '2026-09-26 11:30', actor: 'Patient', action: 'Payment Request Created', reference: 'TXN-20260926-008', amount: 2500 },
+  { id: 'fa-12', timestamp: '2026-08-20 09:15', actor: 'Clinic Staff', action: 'Refund Approved', reference: 'REF-002', amount: 4500 },
+  { id: 'fa-13', timestamp: '2026-08-20 09:18', actor: 'System', action: 'Refund Processing', reference: 'REF-002', amount: 4500 },
+  { id: 'fa-14', timestamp: '2026-08-20 09:20', actor: 'System', action: 'Refund Processed', reference: 'RFN-20260820-002', amount: -4500 },
+  { id: 'fa-15', timestamp: '2026-08-20 09:20', actor: 'System', action: 'Balance Updated', reference: 'RFN-20260820-002', amount: -4500 },
+  { id: 'fa-16', timestamp: '2026-08-25 11:45', actor: 'Clinic Staff', action: 'Refund Rejected', reference: 'REF-003', amount: 800 },
+  { id: 'fa-17', timestamp: '2026-09-26 15:46', actor: 'System', action: 'Payment Failed', reference: 'TXN-20260926-010', amount: 500 },
 ];
 
 const SEED_CANCELLATIONS: CancellationRequest[] = [
   { id: 'CAN-001', patient: 'Ana Kristina Reyes', patientId: 'P-1042', appointmentId: 'APT-0928-08', service: 'Composite Restoration', appointmentDate: '2026-09-28', appointmentTime: '10:00', reason: 'Schedule conflict', paymentReference: 'TXN-20260910-001', paymentStatus: 'paid', status: 'pending' },
   { id: 'CAN-002', patient: 'Jose dela Cruz', patientId: 'P-2001', appointmentId: 'APT-0929-09', service: 'Dental Consultation', appointmentDate: '2026-09-29', appointmentTime: '14:30', reason: 'Unable to attend', paymentStatus: 'pending', status: 'pending' },
+  // Cancellation approved → refund request was auto-created (see REF-002).
+  { id: 'CAN-003', patient: 'Eduardo Bautista', patientId: 'P-1666', appointmentId: 'APT-0816-10', service: 'Surgical Extraction', appointmentDate: '2026-08-16', appointmentTime: '09:00', reason: 'Patient hospitalized', paymentReference: 'TXN-20260815-009', paymentStatus: 'paid', status: 'approved' },
+  // Cancellation rejected — non-refundable per policy.
+  { id: 'CAN-004', patient: 'Lorna dela Cruz', patientId: 'P-0743', appointmentId: 'APT-0925-11', service: 'Root Canal Treatment', appointmentDate: '2026-09-25', appointmentTime: '10:30', reason: 'Changed mind', paymentStatus: 'pending', status: 'rejected', rejectionReason: 'Cancellation requested within 24 hours — deposit is non-refundable per clinic policy.' },
+  // Second pending cancellation for variety.
+  { id: 'CAN-005', patient: 'Maria Corazon Santos', patientId: 'P-0891', appointmentId: 'APT-0930-12', service: 'Fluoride Treatment', appointmentDate: '2026-09-30', appointmentTime: '11:00', reason: 'Travel plans', paymentReference: 'TXN-20260926-007', paymentStatus: 'paid', status: 'pending' },
 ];
 
 const SEED_REFUNDS: RefundRequest[] = [
   { id: 'REF-001', patient: 'Ana Kristina Reyes', patientId: 'P-1042', transactionRef: 'TXN-20260910-001', service: 'Composite Restoration', amountPaid: 2500, requestedAmount: 500, method: 'GCash', paymentDate: '2026-09-10', reason: 'Partial service cancellation', supportingDocument: 'refund_request_ana.pdf', status: 'pending' },
+  // Full refund of a cancelled surgical extraction — completed flow with a refund reference.
+  { id: 'REF-002', patient: 'Eduardo Bautista', patientId: 'P-1666', transactionRef: 'TXN-20260815-009', service: 'Surgical Extraction', amountPaid: 4500, requestedAmount: 4500, method: 'GCash', paymentDate: '2026-08-15', reason: 'Approved cancellation CAN-003', status: 'refunded', refundReference: 'RFN-20260820-002' },
+  // Rejected refund — different reason path.
+  { id: 'REF-003', patient: 'Lorna dela Cruz', patientId: 'P-0743', transactionRef: 'TXN-20260923-005', service: 'Dental Consultation', amountPaid: 500, requestedAmount: 500, method: 'GCash', paymentDate: '2026-09-23', reason: 'Requested refund after failed payment', status: 'rejected', rejectionReason: 'Payment never completed — no funds captured. Request void.' },
+  // Awaiting cash pickup — refund approved for a cash payment, staff must hand the money over.
+  { id: 'REF-004', patient: 'Maria Corazon Santos', patientId: 'P-0891', transactionRef: 'TXN-20260926-007', service: 'Fluoride Treatment', amountPaid: 500, requestedAmount: 500, method: 'Cash', paymentDate: '2026-09-26', reason: 'Cancelled CAN-005 — awaiting patient pickup', status: 'awaiting_cash' },
 ];
 
 const SEED_EXPENSES: ExpenseRecord[] = [
@@ -555,6 +638,8 @@ const SEED_EXPENSES: ExpenseRecord[] = [
   { id: 'EXP-20260912-002', merchant: 'MERALCO / Maynilad', category: 'Utilities', description: 'Clinic electricity and water', amount: 2500, date: '2026-09-12', receiptNumber: 'UTIL-SEP-26', receiptFile: 'utilities_sep.pdf', createdBy: 'Carlo Bautista', createdAt: '2026-09-12 09:30' },
   { id: 'EXP-20260918-003', merchant: 'MedTech Equipment PH', category: 'Equipment', description: 'Routine dental equipment servicing', amount: 2000, date: '2026-09-18', receiptNumber: 'OR-77412', receiptFile: 'equipment_service.jpg', createdBy: 'Carlo Bautista', createdAt: '2026-09-18 14:05' },
   { id: 'EXP-20260924-004', merchant: 'Clinic Operations', category: 'Other', description: 'Clinic rent and other operating costs', amount: 5500, date: '2026-09-24', createdBy: 'Carlo Bautista', createdAt: '2026-09-24 08:40' },
+  { id: 'EXP-20260902-005', merchant: 'UniMed Supplies', category: 'Supplies', description: 'Gloves, cotton rolls, and gauze pads', amount: 1850, date: '2026-09-02', receiptNumber: 'OR-88112', receiptFile: 'unimed_sep.jpg', createdBy: 'Carlo Bautista', createdAt: '2026-09-02 11:20' },
+  { id: 'EXP-20260915-006', merchant: 'Brightline Maintenance', category: 'Maintenance', description: 'Monthly autoclave servicing and parts', amount: 1200, date: '2026-09-15', receiptNumber: 'BL-2026-0915', createdBy: 'Carlo Bautista', createdAt: '2026-09-15 15:00' },
 ];
 
 // ── Context ────────────────────────────────────────────────────
@@ -1360,15 +1445,293 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     const newNotes: OverstockReviewNote[] = [];
     const newTimeline: OrderTimelineEvent[] = [];
     const newAudit: InventoryAuditEntry[] = [];
-    const resolvedItemIds: string[] = [];
-    // Alerts for the same item at a lower severity that get superseded when
-    // a higher-severity alert fires in this pass. Marked auto-resolved in
-    // the state flush below, per the doc's "highest severity wins" rule.
+    const resolvedAlertIds: string[] = [];
     const supersededAlertIds: string[] = [];
     const ts = timestampNow();
     const nowMs = Date.now();
+    const currentAlerts = inventoryAlertLogRef.current;
+    const currentOrders = ordersRef.current;
 
     inventory.forEach(item => {
-      // Skip items that have never carried stock. These are pre-configured
-      // records (added via the Add Item drawer with qty 0) waiting for their
-      // first delivery — the watcher must not fire
+      // Skip pre-configured records that have never carried stock. Otherwise
+      // the watcher would fire a phantom critical alert + auto-PO for items
+      // the clinic hasn't physically received yet.
+      if (!item.everStocked) return;
+
+      const status = getStockStatus(item);
+      const activeAlert = currentAlerts.find(a => a.itemId === item.id && !a.acknowledged);
+
+      // Auto-resolve any open alert once stock returns to normal.
+      if (status === 'ok') {
+        if (activeAlert) resolvedAlertIds.push(activeAlert.id);
+        return;
+      }
+
+      const severity: 'critical' | 'low' | 'overstock' = status;
+
+      // Skip if an equal-or-higher severity alert is already open for this item.
+      if (activeAlert && SEVERITY_RANK[activeAlert.severity] >= SEVERITY_RANK[severity]) return;
+
+      // Skip if a replenishment order is already in flight (except overstock,
+      // which suppresses ordering rather than triggering it).
+      const hasOpenOrder = currentOrders.some(o =>
+        o.itemId === item.id && !['completed', 'cancelled'].includes(o.status)
+      );
+      if (severity !== 'overstock' && hasOpenOrder) return;
+
+      // If we reach this point and a lower-severity alert was open, it will
+      // be superseded by the higher-severity one we're about to fire.
+      if (activeAlert) supersededAlertIds.push(activeAlert.id);
+
+      const threshold = severity === 'critical' ? item.criticalThreshold
+        : severity === 'low' ? item.reorderThreshold
+        : item.overstockThreshold;
+
+      const alertId = `AL-${Date.now()}-${item.id}-${Math.random().toString(36).slice(2, 6)}`;
+      const expiredQty = item.batches.filter(b => isExpired(b.expiry)).reduce((s, b) => s + b.qty, 0);
+      const expiringQty = item.batches.filter(b => isExpiringSoon(b.expiry)).reduce((s, b) => s + b.qty, 0);
+      const upcomingExpiries = item.batches
+        .filter(b => !isExpired(b.expiry))
+        .map(b => Math.ceil((new Date(b.expiry).getTime() - nowMs) / 86400000));
+      const earliestExpiryDays = upcomingExpiries.length > 0 ? Math.min(...upcomingExpiries) : null;
+
+      const expiryRisk = (expiredQty > 0 || expiringQty > 0)
+        ? { expiringQty, expiredQty, earliestExpiryDays }
+        : undefined;
+
+      if (severity === 'overstock') {
+        const noteId = `NT-${Date.now()}-${item.id}`;
+        newNotes.push({
+          id: noteId,
+          itemId: item.id,
+          itemName: item.name,
+          qty: item.quantity,
+          overstockThreshold: item.overstockThreshold,
+          reviewNote: `Quantity ${item.quantity} ${item.unit} is at or above the overstock threshold ${item.overstockThreshold}. Ordering suppressed — review consumption or adjust the threshold.`,
+          createdAt: ts,
+          status: 'open',
+          linkedAlertId: alertId,
+        });
+        newAlerts.push({
+          id: alertId,
+          itemId: item.id,
+          itemName: item.name,
+          severity: 'overstock',
+          qty: item.quantity,
+          threshold: item.overstockThreshold,
+          triggeredAt: ts,
+          acknowledged: false,
+          linkedNoteId: noteId,
+          expiryRisk,
+        });
+        newAudit.push({
+          id: `IA-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          ts: nowMs,
+          timestamp: ts,
+          actor: 'system',
+          action: 'alert-fired',
+          itemId: item.id,
+          itemName: item.name,
+          detail: `Overstock alert fired (${item.quantity} ${item.unit} at threshold ${item.overstockThreshold}). Ordering suppressed.`,
+        });
+      } else {
+        const isCritical = severity === 'critical';
+        const orderId = `ORD-${Date.now()}-${item.id}`;
+        const suggestedQty = Math.max(item.reorderThreshold * 2 - item.quantity, item.reorderThreshold);
+        const poRef = `PO-${new Date().getFullYear()}-${String(currentOrders.length + newOrders.length + 100).padStart(3, '0')}`;
+
+        newOrders.push({
+          id: orderId,
+          poRef,
+          itemId: item.id,
+          itemName: item.name,
+          qty: suggestedQty,
+          stockAtDraft: item.quantity,
+          unit: item.unit,
+          supplierId: item.supplierId,
+          unitCost: item.unitCost,
+          status: 'queued',
+          createdAt: ts,
+          updatedAt: ts,
+          queuedAtMs: nowMs,
+        });
+        newAlerts.push({
+          id: alertId,
+          itemId: item.id,
+          itemName: item.name,
+          severity,
+          qty: item.quantity,
+          threshold,
+          triggeredAt: ts,
+          acknowledged: false,
+          linkedOrderId: orderId,
+          expiryRisk,
+        });
+        newTimeline.push({
+          id: `TL-${Date.now()}-${item.id}-created`,
+          orderId,
+          ts: nowMs,
+          timestamp: ts,
+          kind: 'created',
+          actor: 'system',
+          title: `Auto-drafted ${isCritical ? 'critical' : 'low'} order`,
+          detail: `Stock at ${item.quantity} ${item.unit} (threshold ${threshold}). Drafted PO for ${suggestedQty} ${item.unit}.`,
+        });
+        newAudit.push({
+          id: `IA-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          ts: nowMs,
+          timestamp: ts,
+          actor: 'system',
+          action: 'alert-fired',
+          itemId: item.id,
+          itemName: item.name,
+          detail: `${isCritical ? 'Critical' : 'Low'} stock alert fired (${item.quantity} ${item.unit} at threshold ${threshold}). Order auto-drafted.`,
+        });
+      }
+    });
+
+    // Log auto-resolutions (stock back to normal, superseded by higher severity).
+    [...resolvedAlertIds, ...supersededAlertIds].forEach(alertId => {
+      const a = currentAlerts.find(x => x.id === alertId);
+      if (!a) return;
+      const reason = resolvedAlertIds.includes(alertId)
+        ? 'Stock returned to normal.'
+        : 'Superseded by higher-severity alert.';
+      newAudit.push({
+        id: `IA-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ts: nowMs,
+        timestamp: ts,
+        actor: 'system',
+        action: 'alert-auto-resolved',
+        itemId: a.itemId,
+        itemName: a.itemName,
+        detail: `${reason} ${a.severity} alert auto-resolved.`,
+      });
+    });
+
+    if (newAlerts.length > 0 || resolvedAlertIds.length > 0 || supersededAlertIds.length > 0) {
+      setInventoryAlertLog(prev => {
+        const next = prev.map(a => {
+          if (resolvedAlertIds.includes(a.id) || supersededAlertIds.includes(a.id)) {
+            return { ...a, acknowledged: true, acknowledgedAt: ts, acknowledgedBy: 'system' as const };
+          }
+          return a;
+        });
+        return [...newAlerts, ...next];
+      });
+    }
+    if (newOrders.length > 0) setOrders(prev => [...prev, ...newOrders]);
+    if (newNotes.length > 0) setOverstockReviewNotes(prev => [...newNotes, ...prev]);
+    if (newTimeline.length > 0) setOrderTimeline(prev => [...prev, ...newTimeline]);
+    if (newAudit.length > 0) {
+      setInventoryAuditLog(prev => {
+        const combined = [...newAudit, ...prev];
+        return combined.length > MAX_AUDIT_ENTRIES ? combined.slice(0, MAX_AUDIT_ENTRIES) : combined;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inventory]);
+
+  // M20 — dispatch scheduler. Queued orders dispatch at end of day, or
+  // immediately for critical items if `criticalImmediate` is enabled.
+  useEffect(() => {
+    const queued = orders.filter(o => o.status === 'queued');
+    if (queued.length === 0) return;
+    const currentHour = new Date().getHours();
+    const eodReached = currentHour >= automationConfig.eodDispatchHour;
+
+    const criticalImmediateIds: string[] = [];
+    const eodIds: string[] = [];
+
+    queued.forEach(o => {
+      const item = inventory.find(i => i.id === o.itemId);
+      if (!item) return;
+      const status = getStockStatus(item);
+      if (status === 'critical' && automationConfig.criticalImmediate) {
+        criticalImmediateIds.push(o.id);
+      } else if (eodReached) {
+        eodIds.push(o.id);
+      }
+    });
+
+    if (criticalImmediateIds.length > 0) dispatchOrders(criticalImmediateIds);
+    if (eodIds.length > 0) dispatchOrders(eodIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, inventory, automationConfig, tick]);
+
+  // M22 — response-window timeout. Sent orders past their supplier's window
+  // are force-timed-out, which triggers reroute per the doc's flow.
+  useEffect(() => {
+    const nowMs = Date.now();
+    const timedOut: string[] = [];
+
+    orders.forEach(o => {
+      if (o.status !== 'sent') return;
+      const supplier = suppliers.find(s => s.id === o.supplierId);
+      const windowHours = supplier?.responseWindowHours ?? automationConfig.responseWindowHours;
+      const dispatchEvent = orderTimeline
+        .filter(e => e.orderId === o.id && e.kind === 'dispatched')
+        .sort((a, b) => b.ts - a.ts)[0];
+      if (!dispatchEvent) return;
+      const elapsedHours = (nowMs - dispatchEvent.ts) / 3600000;
+      if (elapsedHours >= windowHours) timedOut.push(o.id);
+    });
+
+    if (timedOut.length > 0) timedOut.forEach(id => forceTimeout(id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, orderTimeline, suppliers, automationConfig, tick]);
+
+  const value: ClinicContextValue = {
+    payments,
+    financialAudit,
+    cancellationRequests,
+    refundRequests,
+    feeCorrections,
+    expenses,
+    createPaymentRequest,
+    confirmCashPayment,
+    verifyBankTransfer,
+    retryOnlinePayment,
+    submitCancellationRequest,
+    decideCancellation,
+    decideRefund,
+    confirmCashRefund,
+    createFeeCorrection,
+    resolveOverpayment,
+    saveExpense,
+    inventory,
+    deductionLog,
+    deductInventory,
+    getStockStatus,
+    expiryAlertDays,
+    setExpiryAlertDays,
+    isExpiringSoon,
+    isExpired,
+    orders,
+    confirmReceived,
+    classifyResponse,
+    cancelOrder,
+    suppliers,
+    inventoryAlertLog,
+    inventoryAuditLog,
+    overstockReviewNotes,
+    acknowledgeAlert,
+    resolveOverstockNote,
+    orderDispatchLog,
+    orderTimeline,
+    parseSupplierReply,
+    automationConfig,
+    setAutomationConfig,
+    fireDemoTrigger,
+    saveInventoryItem,
+    discardBatch,
+  };
+
+  return <ClinicContext.Provider value={value}>{children}</ClinicContext.Provider>;
+}
+
+export function useClinic() {
+  const context = useContext(ClinicContext);
+  if (!context) throw new Error('useClinic must be used inside ClinicProvider');
+  return context;
+}
