@@ -191,10 +191,6 @@ export interface ExpenseRecord {
 }
 
 // ── Recall entries (M5 cross-reference — feeds M21 §3 "Pending Recalls") ─
-// The M5 process documentation is not in scope for this pass; this shape is
-// the minimum surface M21 needs. Seeds mirror the 4 patients that already
-// exist in Scheduling.tsx's local RECALL_PATIENTS mock so the two views
-// agree visually until M5 is properly specified.
 export interface RecallEntry {
   id: string;
   patientId: string;
@@ -321,6 +317,24 @@ const SEVERITY_RANK: Record<'critical' | 'low' | 'overstock', number> = {
 };
 
 const MAX_AUDIT_ENTRIES = 500;
+
+// ── Category shelf life defaults ──────────────────────────────
+// Manufacturer-verified typical shelf lives by dental supply category. Used
+// as the default expiry when an order is confirmed received, so the batch
+// enters M19 monitoring with a plausible date instead of a fabricated
+// 365-day constant. Overridable at receipt time via the optional
+// expiryOverride argument to confirmReceived.
+export const CATEGORY_SHELF_LIFE_DAYS: Record<string, number> = {
+  Restorative:     730,   // composites 2-3y, cements 2y, bonding 1-2y
+  Anesthetics:     730,   // carpules 2-3y
+  Consumables:    1095,   // gloves 3-5y; conservative floor
+  Isolation:      1095,   // rubber dam 3-5y
+  Surgical:        730,   // sutures 2-5y; conservative floor
+  Preventive:      730,   // fluoride varnish ~2y
+  Orthodontics:   1825,   // wires ~5y
+  Prosthodontics: 1095,   // crown blanks ~3y
+};
+export const DEFAULT_SHELF_LIFE_DAYS = 365;
 
 // ── Seed Data ─────────────────────────────────────────────────
 
@@ -621,7 +635,6 @@ const SEED_EXPENSES: ExpenseRecord[] = [
 
 // M5 cross-reference — these four entries mirror the RECALL_PATIENTS constant
 // in Scheduling.tsx so the Dashboard count and the Scheduling view agree.
-// If Scheduling's mock is edited without editing this, they will diverge.
 const SEED_RECALLS: RecallEntry[] = [
   { id: 'R-001', patientId: 'P-0400', patientName: 'Santos, Benedicto R.', lastTreatment: 'Dental Prophylaxis', lastVisit: '2026-03-15', recommendedBy: '2026-09-15', status: 'due', daysOverdue: 9 },
   { id: 'R-002', patientId: 'P-0612', patientName: 'Villanueva, Celestine M.', lastTreatment: 'Composite Restoration', lastVisit: '2026-01-10', recommendedBy: '2026-07-10', status: 'overdue', daysOverdue: 76 },
@@ -658,7 +671,10 @@ interface ClinicContextValue {
   isExpiringSoon: (expiry: string) => boolean;
   isExpired: (expiry: string) => boolean;
   orders: SupplyOrder[];
-  confirmReceived: (orderId: string) => void;
+  // Optional expiry override — pass the physical label's date when the doctor
+  // reads it. When omitted, the batch falls back to the item's category
+  // default (CATEGORY_SHELF_LIFE_DAYS), replacing the previous 365-day guess.
+  confirmReceived: (orderId: string, expiryOverride?: string) => void;
   classifyResponse: (orderId: string, cls: ResponseClass, isOverride?: boolean, reason?: string) => void;
   cancelOrder: (orderId: string) => void;
   suppliers: Supplier[];
@@ -675,8 +691,6 @@ interface ClinicContextValue {
   fireDemoTrigger: (trigger: DemoTrigger) => void;
   saveInventoryItem: (item: InventoryItem) => void;
   discardBatch: (itemId: string, batchNo: string) => void;
-  // M5 cross-reference — feeds M21 §3 "Pending Recalls". Read-only for now;
-  // mutators arrive with a proper M5 pass.
   recallEntries: RecallEntry[];
 }
 
@@ -1240,25 +1254,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     );
   };
 
-  /**
-   * Doctor classifies (or overrides) an order's response classification.
-   *
-   * @param orderId     — target order
-   * @param cls         — the classification the doctor is applying
-   * @param isOverride  — true when reclassifying an already-classified order
-   *                      (doc §15: "Allow the doctor to override classification
-   *                      manually at any time, with an audit log entry")
-   * @param reason      — optional free-text reason, recorded in the audit entry
-   *
-   * Side effects when `isOverride` is true and the classification changes to
-   * `Confirmed` on a rerouted parent: any still-active child order in a
-   * pre-delivery state is cancelled, since the doctor has decided the
-   * original supplier is going to deliver after all.
-   *
-   * A same-state override (e.g. Confirmed → Confirmed) is a no-op and is
-   * skipped entirely — the timeline stays clean, and no reroute chain is
-   * accidentally re-triggered by a duplicate click.
-   */
   const classifyResponse = (
     orderId: string,
     cls: ResponseClass,
@@ -1274,14 +1269,8 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       : cls === 'no_response' ? 'No Response'
       : 'Unclear';
 
-    // Same-state override = no-op. Skip the state change and skip the audit
-    // entry, otherwise the timeline fills with "reclassified" rows that
-    // reflect nothing (and re-fire reroute chains in the unavailable /
-    // no_response cases).
     if (isOverride && target.responseClass === cls) return;
 
-    // If the doctor is overriding a rerouted parent back to Confirmed, cancel
-    // any still-pending child so we don't double-order the same stock.
     if (isOverride && cls === 'confirmed' && target.linkedOrderId) {
       const child = orders.find(o => o.id === target.linkedOrderId);
       if (child && ['queued', 'sent'].includes(child.status)) {
@@ -1293,7 +1282,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // Apply the state change
     if (cls === 'confirmed') {
       setOrders(prev => prev.map(o => o.id === orderId
         ? { ...o, responseClass: cls, status: 'being_delivered' as OrderStatus, confirmedAt: dateStr, updatedAt: dateStr }
@@ -1310,7 +1298,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
         : o));
     }
 
-    // Audit trail entry
     const title = isOverride
       ? `Doctor reclassified response as "${clsLabel}"`
       : `Doctor classified response as "${clsLabel}"`;
@@ -1332,7 +1319,7 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
       `${target.poRef} closed as cancelled after manual review.`);
   };
 
-  const confirmReceived = (orderId: string) => {
+  const confirmReceived = (orderId: string, expiryOverride?: string) => {
     const ts = timestampNow();
     const dateStr = now.toISOString().slice(0, 10);
     let restoredItemId: string | null = null;
@@ -1352,10 +1339,19 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
     if (restoredItemId) {
       setInventory(inv => inv.map(item => {
         if (item.id !== restoredItemId) return item;
+        // Expiry source priority: (1) explicit override from the receipt UI,
+        // (2) category default shelf life, (3) 365-day fallback for unknown
+        // categories. This replaces the previous unconditional 365-day guess,
+        // which made received stock invisible to M19 monitoring because the
+        // resulting expiry always fell outside the 30-day alert window.
+        const shelfLifeDays = CATEGORY_SHELF_LIFE_DAYS[item.category] ?? DEFAULT_SHELF_LIFE_DAYS;
         const newBatch: InventoryBatch = {
-          batchNo: `B${now.getFullYear()}-${restoredItemId!.slice(1)}-RCV`,
+          // Millisecond suffix prevents batch-number collision when the same
+          // item is received more than once — without it, discardBatch could
+          // target the wrong batch on repeat receipts.
+          batchNo: `B${now.getFullYear()}-${restoredItemId!.slice(1)}-RCV-${Date.now().toString().slice(-4)}`,
           qty: restoredQty,
-          expiry: addDays(now, 365),
+          expiry: expiryOverride ?? addDays(now, shelfLifeDays),
         };
         return {
           ...item,
@@ -1421,8 +1417,6 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     ordersRef.current = orders;
   }, [orders]);
-
-  // ── Effects ──────────────────────────────────────────────────
 
   useEffect(() => {
     const t = setInterval(() => setTick(x => x + 1), 30_000);

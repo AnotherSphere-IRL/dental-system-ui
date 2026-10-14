@@ -15,11 +15,14 @@ import {
 } from '../icons';
 import {
   useClinic,
+  CATEGORY_SHELF_LIFE_DAYS,
+  DEFAULT_SHELF_LIFE_DAYS,
   type SupplyOrder,
   type OrderStatus,
   type OrderTimelineEvent,
   type Supplier,
   type ResponseClass,
+  type InventoryItem,
 } from '../../context/ClinicContext';
 
 // ── Display adapter ───────────────────────────────────────────
@@ -66,6 +69,19 @@ function isTerminal(status: OrderStatus): boolean {
  */
 function canReceiveDelivery(status: OrderStatus): boolean {
   return !isTerminal(status) && status !== 'rerouted';
+}
+
+/**
+ * Compute the pre-filled default expiry for a receipt dialog. Uses the item's
+ * category shelf life (manufacturer-verified typical durations) so the batch
+ * enters M19 monitoring with a plausible date. Falls back to 365 days for
+ * unknown categories.
+ */
+function defaultExpiryFor(item: InventoryItem | undefined): string {
+  const days = item
+    ? (CATEGORY_SHELF_LIFE_DAYS[item.category] ?? DEFAULT_SHELF_LIFE_DAYS)
+    : DEFAULT_SHELF_LIFE_DAYS;
+  return new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
 }
 
 const RESPONSE_LABELS: Record<ResponseClass, string> = {
@@ -183,11 +199,6 @@ function OverrideClassificationModal({
   onClose: () => void;
   onApply: (cls: ResponseClass, reason?: string) => void;
 }) {
-  // An order reaches this modal either because it was auto-classified as
-  // `unclear` (needs the doctor to say what the reply actually means), or
-  // because the doctor is correcting an already-classified response.
-  // The `unclear` sentinel is never a valid target — it's the absence of a
-  // classification the parser could act on.
   const isInitialClassification = !order.responseClass || order.responseClass === 'unclear';
 
   const initialCls: ResponseClass =
@@ -217,9 +228,6 @@ function OverrideClassificationModal({
     },
   ];
 
-  // For an ambiguous reply being asserted as Proceed, the audit trail needs
-  // the doctor's own words — otherwise there is no record of why the order
-  // was allowed through when the supplier never said "yes" in writing.
   const reasonRequired = isInitialClassification && cls === 'confirmed';
   const canSubmit = !reasonRequired || reason.trim().length > 0;
 
@@ -372,8 +380,6 @@ function TimelineDrawer({
   const canAct = !isTerminal(order.status);
   const isUnclear = order.status === 'unclear';
 
-  // Print-to-PDF acts as the "export" — the drawer body is wrapped in
-  // #audit-print-region and the print CSS lifts it into a clean sheet.
   const handlePrint = () => {
     setExported(true);
     window.print();
@@ -681,12 +687,11 @@ export default function OrderMonitoring({
   const [poOrder, setPoOrder] = useState<SupplyOrder | null>(null);
   const [overrideTarget, setOverrideTarget] = useState<SupplyOrder | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
-  // Inline "Confirm Received" link is a one-click action placed next to
-  // other row-level links. Holding the target here lets the first click
-  // swap the link for a Confirm / Cancel pair so a same-cell misclick
-  // (aiming for "View order timeline" and landing on Confirm) can be
-  // undone without completing the order.
-  const [pendingReceiveId, setPendingReceiveId] = useState<string | null>(null);
+  // Expanded receipt state: holds the target order and the pre-filled expiry
+  // date. The doctor can accept the default (category shelf life) or override
+  // it before clicking Confirm. Preserves the two-step pattern the codebase
+  // already uses for same-cell misclick protection.
+  const [pendingReceive, setPendingReceive] = useState<{ orderId: string; expiry: string } | null>(null);
   const pageSize = 5;
 
   const consumedInitialOrderRef = useRef<string | null>(null);
@@ -790,11 +795,6 @@ export default function OrderMonitoring({
                   l => l.orderId === order.id && l.deliveryStatus === 'bounced'
                 );
                 const canAct = !isTerminal(order.status);
-                // Any non-terminal order can be reclassified. For `unclear`
-                // orders this is the *first* classification (the doctor
-                // decides what the ambiguous reply means); for others it's an
-                // override of an already-classified response. Same modal,
-                // different copy.
                 const canOverride = canAct;
                 const isUnclear = order.status === 'unclear';
                 const canReceive = canReceiveDelivery(order.status);
@@ -842,16 +842,25 @@ export default function OrderMonitoring({
                             </button>
                           )}
                           {order.status === 'being_delivered' && (
-                            pendingReceiveId === order.id ? (
-                              <div className="mt-2 flex items-center gap-1.5">
+                            pendingReceive?.orderId === order.id ? (
+                              <div className="mt-2 flex items-end gap-2 flex-wrap">
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-[9px] font-semibold uppercase tracking-wider text-clinical-500">Expiry</span>
+                                  <input
+                                    type="date"
+                                    value={pendingReceive.expiry}
+                                    onChange={e => setPendingReceive({ orderId: order.id, expiry: e.target.value })}
+                                    className="rounded-md border border-clinical-200 bg-white px-2 py-1 text-xs text-clinical-800 outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+                                  />
+                                </label>
                                 <button
-                                  onClick={() => { confirmReceived(order.id); setPendingReceiveId(null); }}
+                                  onClick={() => { confirmReceived(order.id, pendingReceive.expiry); setPendingReceive(null); }}
                                   className="inline-flex items-center gap-1 rounded-md border border-success-200 bg-success-50 px-2.5 py-1 text-xs font-semibold text-success-700 hover:bg-success-100"
                                 >
                                   <IconCheck className="h-3.5 w-3.5" /> Confirm
                                 </button>
                                 <button
-                                  onClick={() => setPendingReceiveId(null)}
+                                  onClick={() => setPendingReceive(null)}
                                   className="rounded-md px-2 py-1 text-xs font-medium text-clinical-500 hover:text-clinical-800"
                                 >
                                   Cancel
@@ -859,7 +868,7 @@ export default function OrderMonitoring({
                               </div>
                             ) : (
                               <button
-                                onClick={() => setPendingReceiveId(order.id)}
+                                onClick={() => setPendingReceive({ orderId: order.id, expiry: defaultExpiryFor(item) })}
                                 className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-primary-700 hover:text-primary-900"
                               >
                                 <IconPackage className="h-3.5 w-3.5" /> Confirm Received <IconChevronRight className="h-3.5 w-3.5" />
@@ -886,7 +895,6 @@ export default function OrderMonitoring({
                               <IconClock className="h-4 w-4 shrink-0 text-clinical-500" /> View audit trail
                             </button>
 
-                            {/* Divider only when a consequential action follows */}
                             {(canOverride || canReceive) && (
                               <div className="my-1 border-t border-clinical-100" />
                             )}
@@ -898,7 +906,7 @@ export default function OrderMonitoring({
                               </button>
                             )}
                             {canReceive && (
-                              <button onClick={() => { confirmReceived(order.id); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
+                              <button onClick={() => { setPendingReceive({ orderId: order.id, expiry: defaultExpiryFor(item) }); setMenuId(null); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-clinical-700 hover:bg-clinical-50">
                                 <IconPackage className="h-4 w-4 shrink-0 text-clinical-500" /> Confirm Received
                               </button>
                             )}
